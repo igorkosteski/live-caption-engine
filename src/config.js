@@ -49,7 +49,7 @@ function buildConfig() {
       translationSubtitlePath: process.env.MEDIAPACKAGE_TRANSLATION_SUBTITLE_PATH || 'subtitles-translated'
     },
     engine,
-    soniox: {
+    soniox: engine === 'soniox' ? {
       apiKey: requiredEnv('SONIOX_API_KEY'),
       model: process.env.SONIOX_MODEL || 'stt-rt-preview',
       wsUrl:
@@ -64,7 +64,18 @@ function buildConfig() {
         .filter(Boolean),
       // BCP-47 code of the spoken source language; leave empty to let Soniox auto-detect.
       translationSourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || ''
-    }
+    } : null,
+    gemini: engine === 'gemini' ? {
+      apiKey: requiredEnv('GEMINI_API_KEY'),
+      // Model name without the "models/" prefix, e.g. gemini-2.0-flash-live-001
+      model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-live-001',
+      enableTranslation: toBool(process.env.ENABLE_TRANSLATION, false),
+      targetLanguages: (process.env.TRANSLATION_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGE || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      sourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || ''
+    } : null
   };
 
   return config;

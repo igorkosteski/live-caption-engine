@@ -43,6 +43,7 @@ async function main() {
     engineName: config.engine,
     logger,
     sonioxConfig: config.soniox,
+    geminiConfig: config.gemini,
     streamConfig: config.stream
   });
 
