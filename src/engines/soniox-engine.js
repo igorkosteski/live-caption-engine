@@ -2,10 +2,11 @@ const WebSocket = require('ws');
 const BaseEngine = require('./base-engine');
 
 class SonioxEngine extends BaseEngine {
-  constructor({ logger, sonioxConfig, streamConfig }) {
+  constructor({ logger, sonioxConfig, streamConfig, suppressSourceCaptions = false }) {
     super(logger);
     this.sonioxConfig = sonioxConfig;
     this.streamConfig = streamConfig;
+    this.suppressSourceCaptions = suppressSourceCaptions;
     this.ws = null;
     this.connected = false;
     this.closedByClient = false;
@@ -100,7 +101,9 @@ class SonioxEngine extends BaseEngine {
 
           if (finalTokens) {
             this.finalText += finalTokens;
-            this.emitFinalCaption(finalizedTokens);
+            if (!this.suppressSourceCaptions) {
+              this.emitFinalCaption(finalizedTokens);
+            }
           }
 
           this.partialText = nonFinalTokens;
