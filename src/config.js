@@ -41,6 +41,12 @@ function buildConfig() {
       windowSegments: toInt(process.env.CAPTIONS_WINDOW_SEGMENTS, 5),
       basePath: process.env.CAPTIONS_BASE_PATH || '/captions'
     },
+    mediapackage: {
+      enabled: toBool(process.env.MEDIAPACKAGE_ENABLED, false),
+      ingestUrl: process.env.MEDIAPACKAGE_INGEST_URL || '',
+      awsRegion: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
+      subtitlePath: process.env.MEDIAPACKAGE_SUBTITLE_PATH || 'subtitles'
+    },
     engine,
     soniox: {
       apiKey: requiredEnv('SONIOX_API_KEY'),

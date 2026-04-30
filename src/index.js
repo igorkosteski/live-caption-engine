@@ -8,6 +8,7 @@ const { buildConfig } = require('./config');
 const { createEngine } = require('./engines');
 const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
+const MediaPackagePublisher = require('./captions/mediapackage-publisher');
 
 function warnOnUnreachableRtmpHost(rtmpUrl) {
   let parsedUrl;
@@ -51,7 +52,10 @@ async function main() {
     engine
   });
 
-  const captions = config.captions.enabled
+  // Captions must be enabled when MediaPackage publishing is active.
+  const captionsActive = config.captions.enabled || config.mediapackage.enabled;
+
+  const captions = captionsActive
     ? new LiveWebVtt({
         logger,
         segmentDurationMs: config.captions.segmentDurationMs,
@@ -60,10 +64,28 @@ async function main() {
       })
     : null;
 
+  let publisher = null;
+
   if (captions) {
     engine.on('final-caption', (cue) => {
       captions.addCue(cue);
     });
+
+    if (config.mediapackage.enabled) {
+      if (!config.mediapackage.ingestUrl) {
+        throw new Error('MEDIAPACKAGE_INGEST_URL is required when MEDIAPACKAGE_ENABLED=true');
+      }
+
+      publisher = new MediaPackagePublisher({
+        logger,
+        captions,
+        ingestUrl: config.mediapackage.ingestUrl,
+        awsRegion: config.mediapackage.awsRegion,
+        subtitlePath: config.mediapackage.subtitlePath
+      });
+
+      publisher.start();
+    }
 
     app.get(`${config.captions.basePath}/live.vtt`, (_req, res) => {
       res.type('text/vtt').send(captions.renderLiveVtt());
@@ -109,6 +131,10 @@ async function main() {
 
   const shutdown = async (signal) => {
     logger.info({ signal }, 'Shutting down');
+
+    if (publisher) {
+      publisher.stop();
+    }
 
     try {
       await streamSession.stop();

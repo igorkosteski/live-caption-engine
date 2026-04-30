@@ -13,6 +13,8 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@aws-sdk/credential-providers": "^3.1040.0",
+    "@aws-sdk/signature-v4": "^3.370.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "pino": "^9.4.0",
