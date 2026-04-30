@@ -45,7 +45,8 @@ function buildConfig() {
       enabled: toBool(process.env.MEDIAPACKAGE_ENABLED, false),
       ingestUrl: process.env.MEDIAPACKAGE_INGEST_URL || '',
       awsRegion: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
-      subtitlePath: process.env.MEDIAPACKAGE_SUBTITLE_PATH || 'subtitles'
+      subtitlePath: process.env.MEDIAPACKAGE_SUBTITLE_PATH || 'subtitles',
+      translationSubtitlePath: process.env.MEDIAPACKAGE_TRANSLATION_SUBTITLE_PATH || 'subtitles-translated'
     },
     engine,
     soniox: {

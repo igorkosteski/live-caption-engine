@@ -101,6 +101,18 @@ class SonioxEngine extends BaseEngine {
               'Transcription update'
             );
           }
+
+          // Translated tokens arrive alongside source tokens in message.translations.
+          // Each entry has a language code and a tokens array structured the same way.
+          if (Array.isArray(message.translations)) {
+            for (const translation of message.translations) {
+              const finalizedTranslated = (translation.tokens ?? []).filter((t) => t.is_final);
+
+              if (finalizedTranslated.length > 0) {
+                this.emitFinalCaption(finalizedTranslated, translation.language, finalizedTokens);
+              }
+            }
+          }
         }
 
         if (message.finished) {
@@ -154,25 +166,33 @@ class SonioxEngine extends BaseEngine {
     this.ws.send(buffer, { binary: true });
   }
 
-  emitFinalCaption(tokens) {
+  // language is undefined for source-language captions, a BCP-47 string for translations.
+  // fallbackTokens are the source tokens used for timing when translated tokens lack timing.
+  emitFinalCaption(tokens, language, fallbackTokens) {
     const text = tokens.map((token) => token.text).join('').trim();
 
     if (!text) {
       return;
     }
 
-    const startMs = tokens.find((token) => Number.isFinite(token.start_ms))?.start_ms;
-    const endMs = [...tokens].reverse().find((token) => Number.isFinite(token.end_ms))?.end_ms;
+    const timingTokens =
+      tokens.find((token) => Number.isFinite(token.start_ms)) ? tokens : (fallbackTokens ?? tokens);
+
+    const startMs = timingTokens.find((token) => Number.isFinite(token.start_ms))?.start_ms;
+    const endMs = [...timingTokens].reverse().find((token) => Number.isFinite(token.end_ms))?.end_ms;
 
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-      this.logger.warn({ tokens }, 'Skipping final caption without valid timing');
+      this.logger.warn({ tokens, language }, 'Skipping final caption without valid timing');
       return;
     }
 
-    this.emit('final-caption', {
+    const eventName = language ? 'final-caption-translated' : 'final-caption';
+
+    this.emit(eventName, {
       startMs,
       endMs,
-      text
+      text,
+      language
     });
   }
 

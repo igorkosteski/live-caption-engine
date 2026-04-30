@@ -85,6 +85,48 @@ async function main() {
       });
 
       publisher.start();
+
+      // When translation is enabled, wire a second VTT track + publisher for the translated language.
+      if (config.soniox.enableTranslation) {
+        const translatedCaptions = new LiveWebVtt({
+          logger,
+          segmentDurationMs: config.captions.segmentDurationMs,
+          windowSegments: config.captions.windowSegments,
+          basePath: `${config.captions.basePath}/translated`
+        });
+
+        engine.on('final-caption-translated', (cue) => {
+          translatedCaptions.addCue(cue);
+        });
+
+        const translatedPublisher = new MediaPackagePublisher({
+          logger,
+          captions: translatedCaptions,
+          ingestUrl: config.mediapackage.ingestUrl,
+          awsRegion: config.mediapackage.awsRegion,
+          subtitlePath: config.mediapackage.translationSubtitlePath
+        });
+
+        translatedPublisher.start();
+
+        // Expose translated captions locally as well.
+        app.get(`${config.captions.basePath}/translated/live.vtt`, (_req, res) => {
+          res.type('text/vtt').send(translatedCaptions.renderLiveVtt());
+        });
+
+        app.get(`${config.captions.basePath}/translated/index.m3u8`, (_req, res) => {
+          res.type('application/vnd.apple.mpegurl').send(translatedCaptions.renderPlaylist());
+        });
+
+        // Expose shutdown for the translated publisher.
+        const origShutdownRef = publisher;
+        publisher = {
+          stop() {
+            origShutdownRef.stop();
+            translatedPublisher.stop();
+          }
+        };
+      }
     }
 
     app.get(`${config.captions.basePath}/live.vtt`, (_req, res) => {
