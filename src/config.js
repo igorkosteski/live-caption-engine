@@ -68,7 +68,10 @@ function buildConfig() {
           .filter(Boolean)
           .map((pair) => pair.split(':').map((p) => p.trim()))
           .filter(([lang, voice]) => lang && voice)
-      )
+      ),
+      // Sub-path prefix under ingestUrl for audio HLS segments, e.g. "dub-audio".
+      // Each language gets "<audioPath>-<lang>/audio.m3u8" and "<audioPath>-<lang>/seg-N.aac".
+      audioPath: process.env.DUBBING_AUDIO_PATH || 'dub-audio'
     },
     engine,
     soniox: engine === 'soniox' ? {

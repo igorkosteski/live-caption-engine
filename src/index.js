@@ -11,6 +11,7 @@ const LiveWebVtt = require('./captions/live-webvtt');
 const MediaPackagePublisher = require('./captions/mediapackage-publisher');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
 const PollyDubbingEngine = require('./engines/polly-dubbing-engine');
+const AudioSegmentPublisher = require('./dubbing/audio-segment-publisher');
 
 function warnOnUnreachableRtmpHost(rtmpUrl) {
   let parsedUrl;
@@ -200,7 +201,7 @@ async function main() {
   });
 
   // ── Dubbing ──────────────────────────────────────────────────────────────────
-  const dubbingEngines = [];  // { engine, lang, safeLang }
+  const dubbingEngines = [];  // { engine, audioPublisher|null, lang, safeLang }
 
   if (config.dubbing.enabled && config.dubbing.targetLanguages.length > 0) {
     for (const lang of config.dubbing.targetLanguages) {
@@ -223,10 +224,24 @@ async function main() {
         });
 
         await dubbingEngine.start();
-        dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
         // Gemini dubbing needs raw PCM — wire after streamSession is created.
         streamSession.on('audio', (chunk) => dubbingEngine.sendAudio(chunk));
+
+        const geminiAudioPublisher = config.mediapackage.enabled
+          ? new AudioSegmentPublisher({
+              logger,
+              dubbingStream: dubbingEngine.dubbingStream,
+              ingestUrl: config.mediapackage.ingestUrl,
+              awsRegion: config.mediapackage.awsRegion,
+              audioPath: `${config.dubbing.audioPath}-${safeLang}`,
+              segmentDurationMs: config.captions.segmentDurationMs,
+              windowSegments: config.captions.windowSegments
+            })
+          : null;
+
+        geminiAudioPublisher?.start();
+        dubbingEngines.push({ engine: dubbingEngine, audioPublisher: geminiAudioPublisher, lang, safeLang });
       } else if (config.dubbing.engine === 'polly') {
         const dubbingEngine = new PollyDubbingEngine({
           logger,
@@ -237,7 +252,21 @@ async function main() {
         });
 
         dubbingEngine.start();
-        dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
+
+        const pollyAudioPublisher = config.mediapackage.enabled
+          ? new AudioSegmentPublisher({
+              logger,
+              dubbingStream: dubbingEngine.dubbingStream,
+              ingestUrl: config.mediapackage.ingestUrl,
+              awsRegion: config.mediapackage.awsRegion,
+              audioPath: `${config.dubbing.audioPath}-${safeLang}`,
+              segmentDurationMs: config.captions.segmentDurationMs,
+              windowSegments: config.captions.windowSegments
+            })
+          : null;
+
+        pollyAudioPublisher?.start();
+        dubbingEngines.push({ engine: dubbingEngine, audioPublisher: pollyAudioPublisher, lang, safeLang });
       } else {
         throw new Error(`Unknown DUBBING_ENGINE: ${config.dubbing.engine}. Use 'gemini' or 'polly'.`);
       }
@@ -266,7 +295,10 @@ async function main() {
       {
         dubbingEngine: config.dubbing.engine,
         languages: config.dubbing.targetLanguages,
-        endpoints: config.dubbing.targetLanguages.map((l) => `/dub/${l.replace(/[^a-zA-Z0-9-]/g, '')}/audio.pcm`)
+        endpoints: config.dubbing.targetLanguages.map((l) => `/dub/${l.replace(/[^a-zA-Z0-9-]/g, '')}/audio.pcm`),
+        mediapackageAudio: config.mediapackage.enabled
+          ? config.dubbing.targetLanguages.map((l) => `${config.dubbing.audioPath}-${l.replace(/[^a-zA-Z0-9-]/g, '')}/audio.m3u8`)
+          : false
       },
       'Dubbing ready'
     );
@@ -277,8 +309,9 @@ async function main() {
   const shutdown = async (signal) => {
     logger.info({ signal }, 'Shutting down');
 
-    for (const { engine: dubbingEngine } of dubbingEngines) {
+    for (const { engine: dubbingEngine, audioPublisher } of dubbingEngines) {
       try { await dubbingEngine.stop?.(); } catch { /* ignore */ }
+      try { audioPublisher?.stop(); } catch { /* ignore */ }
     }
 
     if (publisher) {
