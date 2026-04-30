@@ -153,6 +153,18 @@ class GeminiDubbingEngine {
           { code, reason: reason?.toString() || '', targetLanguage: this.targetLanguage },
           'Gemini dubbing WebSocket closed'
         );
+
+        // Auto-reconnect unless the client requested the close.
+        if (!this.closedByClient) {
+          setTimeout(() => {
+            if (!this.closedByClient) {
+              this.logger.info({ targetLanguage: this.targetLanguage }, 'Gemini dubbing reconnecting...');
+              this.start().catch((err) => {
+                this.logger.error({ err, targetLanguage: this.targetLanguage }, 'Gemini dubbing reconnect failed');
+              });
+            }
+          }, 3000);
+        }
       });
     });
   }

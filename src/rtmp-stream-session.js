@@ -135,7 +135,10 @@ class RtmpStreamSession extends EventEmitter {
       }
 
       if (!this.engine.connected) {
-        this.logger.warn('Soniox disconnected, restarting FFmpeg pipeline');
+        this.logger.warn(
+          { engine: this.streamConfig.engineName || 'engine' },
+          'Transcription engine disconnected, restarting FFmpeg pipeline'
+        );
         this.ffmpeg.kill('SIGTERM');
         return;
       }

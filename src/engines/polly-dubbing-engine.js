@@ -76,17 +76,22 @@ class PollyDubbingEngine {
   }
 
   start() {
+    // Serial queue ensures captions are synthesized and pushed in order.
+    this._queue = Promise.resolve();
+
     this._onCaption = (cue) => {
       if (cue.language !== this.targetLanguage) {
         return;
       }
 
-      this._synthesize(cue.text).catch((err) => {
-        this.logger.error(
-          { err, language: this.targetLanguage, text: cue.text.slice(0, 80) },
-          'Polly synthesis failed'
-        );
-      });
+      this._queue = this._queue
+        .then(() => this._synthesize(cue.text))
+        .catch((err) => {
+          this.logger.error(
+            { err, language: this.targetLanguage, text: cue.text.slice(0, 80) },
+            'Polly synthesis failed'
+          );
+        });
     };
 
     this._engine.on('final-caption-translated', this._onCaption);

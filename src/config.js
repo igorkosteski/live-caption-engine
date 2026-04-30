@@ -60,6 +60,11 @@ function buildConfig() {
       // Gemini-specific: voice name applied to all dubbed languages.
       // Voices: Aoede, Charon, Fenrir, Kore, Puck
       geminiVoice: process.env.DUBBING_GEMINI_VOICE || 'Aoede',
+      // Gemini dubbing API config — loaded regardless of the main transcription engine
+      // so that DUBBING_ENGINE=gemini works with ENGINE=soniox too.
+      geminiApiKey: process.env.GEMINI_API_KEY || '',
+      geminiModel: process.env.GEMINI_DUBBING_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash-live-001',
+      geminiSourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || '',
       // Polly-specific: comma-separated overrides e.g. "en:Matthew,de:Hans"
       pollyVoices: Object.fromEntries(
         (process.env.POLLY_VOICES || '')

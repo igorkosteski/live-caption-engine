@@ -208,15 +208,16 @@ async function main() {
       const safeLang = lang.replace(/[^a-zA-Z0-9-]/g, '');
 
       if (config.dubbing.engine === 'gemini') {
-        if (!config.gemini) {
-          throw new Error('DUBBING_ENGINE=gemini requires ENGINE=gemini and GEMINI_API_KEY');
+        if (!config.dubbing.geminiApiKey) {
+          throw new Error('DUBBING_ENGINE=gemini requires GEMINI_API_KEY');
         }
 
         const dubbingEngine = new GeminiDubbingEngine({
           logger,
           geminiConfig: {
-            ...config.gemini,
-            sourceLanguage: config.soniox?.translationSourceLanguage || config.gemini?.sourceLanguage || ''
+            apiKey: config.dubbing.geminiApiKey,
+            model: config.dubbing.geminiModel,
+            sourceLanguage: config.dubbing.geminiSourceLanguage
           },
           streamConfig: config.stream,
           targetLanguage: lang,
