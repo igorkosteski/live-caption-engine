@@ -46,6 +46,10 @@ class SonioxEngine extends BaseEngine {
           configMessage.language_hints = [this.sonioxConfig.translationSourceLanguage];
         }
 
+        if (this.sonioxConfig.enableDiarization) {
+          configMessage.enable_speaker_tags = true;
+        }
+
         if (this.sonioxConfig.enableTranslation) {
           // Soniox only accepts a single target_language per session.
           // Use the first configured language; warn if multiple were set.
@@ -187,9 +191,9 @@ class SonioxEngine extends BaseEngine {
   // language is undefined for source-language captions, a BCP-47 string for translations.
   // fallbackTokens are the source tokens used for timing when translated tokens lack timing.
   emitFinalCaption(tokens, language, fallbackTokens) {
-    const text = tokens.map((token) => token.text).join('').trim();
+    const rawText = tokens.map((token) => token.text).join('').trim();
 
-    if (!text) {
+    if (!rawText) {
       return;
     }
 
@@ -206,10 +210,54 @@ class SonioxEngine extends BaseEngine {
 
     const eventName = language ? 'final-caption-translated' : 'final-caption';
 
+    // When diarization is enabled, emit one cue per speaker run so each cue
+    // carries a <v SpeakerN>...</v> WebVTT voice span.  Translated tokens
+    // don't carry speaker tags so we fall back to a single cue there.
+    const hasSpeakerTags =
+      this.sonioxConfig.enableDiarization &&
+      !language &&
+      tokens.some((t) => t.speaker);
+
+    if (hasSpeakerTags) {
+      // Group consecutive tokens that share the same speaker label.
+      const runs = [];
+      for (const token of tokens) {
+        const last = runs[runs.length - 1];
+        if (last && last.speaker === (token.speaker || last.speaker)) {
+          last.tokens.push(token);
+        } else {
+          runs.push({ speaker: token.speaker || 'S?', tokens: [token] });
+        }
+      }
+
+      for (const run of runs) {
+        const runText = run.tokens.map((t) => t.text).join('').trim();
+        if (!runText) continue;
+
+        const runTimingTokens = run.tokens.find((t) => Number.isFinite(t.start_ms))
+          ? run.tokens
+          : timingTokens;
+
+        const runStart = runTimingTokens.find((t) => Number.isFinite(t.start_ms))?.start_ms ?? startMs;
+        const runEnd = [...runTimingTokens].reverse().find((t) => Number.isFinite(t.end_ms))?.end_ms ?? endMs;
+
+        this.emit(eventName, {
+          startMs: runStart,
+          endMs: runEnd,
+          // WebVTT voice span: <v SpeakerN>text</v>
+          text: `<v ${run.speaker}>${runText}</v>`,
+          speaker: run.speaker,
+          language
+        });
+      }
+
+      return;
+    }
+
     this.emit(eventName, {
       startMs,
       endMs,
-      text,
+      text: rawText,
       language
     });
   }

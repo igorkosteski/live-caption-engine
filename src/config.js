@@ -88,7 +88,9 @@ function buildConfig() {
         .map((s) => s.trim())
         .filter(Boolean),
       // BCP-47 code of the spoken source language; leave empty to let Soniox auto-detect.
-      translationSourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || ''
+      translationSourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || '',
+      // When true, requests speaker tags from Soniox and encodes them as WebVTT <v> voice spans.
+      enableDiarization: toBool(process.env.SONIOX_ENABLE_DIARIZATION, false)
     } : null,
     gemini: engine === 'gemini' ? {
       apiKey: requiredEnv('GEMINI_API_KEY'),
