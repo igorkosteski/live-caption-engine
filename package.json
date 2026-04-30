@@ -9,7 +9,7 @@
     "dev": "nodemon src/index.js",
     "lint": "eslint .",
     "generate-config": "node scripts/generate-config.js",
-    "test": "jest --testPathPattern=tests/"
+    "test": "jest --testPathPatterns=tests/"
   },
   "engines": {
     "node": ">=20"
