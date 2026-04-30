@@ -1,0 +1,21 @@
+{
+  "version": "53.0.0",
+  "files": {
+    "53665cc57dc44485e25d332fa69a65710196614741924969ffb012aa1d60c83d": {
+      "displayName": "LiveCaptionMedia Template",
+      "source": {
+        "path": "LiveCaptionMedia.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-us-east-1-c469b004": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "53665cc57dc44485e25d332fa69a65710196614741924969ffb012aa1d60c83d.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

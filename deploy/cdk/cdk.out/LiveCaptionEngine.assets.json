@@ -1,0 +1,36 @@
+{
+  "version": "53.0.0",
+  "files": {
+    "7fa1e366ee8a9ded01fc355f704cff92bfd179574e6f9cfee800a3541df1b200": {
+      "displayName": "LiveCaptionEngine/Custom::VpcRestrictDefaultSGCustomResourceProvider Code",
+      "source": {
+        "path": "/tmp/cdk-custom-resourceOEMgMK",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "current_account-us-east-1-b3ca7882": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "7fa1e366ee8a9ded01fc355f704cff92bfd179574e6f9cfee800a3541df1b200.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    },
+    "337486cee36388c2b5e0341118feb06a2193ce725da4ed620490fdd2731d5eac": {
+      "displayName": "LiveCaptionEngine Template",
+      "source": {
+        "path": "LiveCaptionEngine.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-us-east-1-aca4dd5f": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "337486cee36388c2b5e0341118feb06a2193ce725da4ed620490fdd2731d5eac.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
