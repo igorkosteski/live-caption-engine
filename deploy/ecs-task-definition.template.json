@@ -1,0 +1,54 @@
+{
+  "family": "live-caption-engine",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/liveCaptionEngineTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "live-caption-engine",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "ENGINE", "value": "soniox" },
+        { "name": "RTMP_URL", "value": "rtmp://<your-ingest-host>/<app>/<stream-key>" },
+        { "name": "SONIOX_MODEL", "value": "stt-rt-preview" },
+        { "name": "AUDIO_SAMPLE_RATE", "value": "16000" },
+        { "name": "AUDIO_CHANNELS", "value": "1" },
+        { "name": "RECONNECT_DELAY_MS", "value": "3000" },
+        { "name": "MAX_RETRIES", "value": "0" },
+        { "name": "PORT", "value": "8080" },
+        { "name": "LOG_LEVEL", "value": "info" }
+      ],
+      "secrets": [
+        {
+          "name": "SONIOX_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:<region>:<account-id>:secret:live-caption-engine/soniox-api-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/live-caption-engine",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 20
+      }
+    }
+  ]
+}

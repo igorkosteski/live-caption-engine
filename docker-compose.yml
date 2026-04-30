@@ -1,0 +1,13 @@
+services:
+  live-caption-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker:host-gateway"
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
