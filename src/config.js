@@ -48,6 +48,28 @@ function buildConfig() {
       subtitlePath: process.env.MEDIAPACKAGE_SUBTITLE_PATH || 'subtitles',
       translationSubtitlePath: process.env.MEDIAPACKAGE_TRANSLATION_SUBTITLE_PATH || 'subtitles-translated'
     },
+    dubbing: {
+      enabled: toBool(process.env.DUBBING_ENABLED, false),
+      // 'gemini' uses Gemini Live audio-in/audio-out; 'polly' uses AWS Polly TTS on translated captions.
+      engine: process.env.DUBBING_ENGINE || 'gemini',
+      // Defaults to the same languages as translation if not specified separately.
+      targetLanguages: (process.env.DUBBING_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGE || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      // Gemini-specific: voice name applied to all dubbed languages.
+      // Voices: Aoede, Charon, Fenrir, Kore, Puck
+      geminiVoice: process.env.DUBBING_GEMINI_VOICE || 'Aoede',
+      // Polly-specific: comma-separated overrides e.g. "en:Matthew,de:Hans"
+      pollyVoices: Object.fromEntries(
+        (process.env.POLLY_VOICES || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((pair) => pair.split(':').map((p) => p.trim()))
+          .filter(([lang, voice]) => lang && voice)
+      )
+    },
     engine,
     soniox: engine === 'soniox' ? {
       apiKey: requiredEnv('SONIOX_API_KEY'),

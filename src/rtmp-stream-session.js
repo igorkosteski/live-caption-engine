@@ -1,7 +1,9 @@
 const { spawn } = require('child_process');
+const { EventEmitter } = require('events');
 
-class RtmpStreamSession {
+class RtmpStreamSession extends EventEmitter {
   constructor({ logger, streamConfig, engine }) {
+    super();
     this.logger = logger;
     this.streamConfig = streamConfig;
     this.engine = engine;
@@ -73,6 +75,7 @@ class RtmpStreamSession {
       }
 
       this.engine.sendAudio(chunk);
+      this.emit('audio', chunk);
     });
 
     this.ffmpeg.stderr.on('data', (chunk) => {
