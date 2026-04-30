@@ -46,9 +46,20 @@ class SonioxEngine extends BaseEngine {
         }
 
         if (this.sonioxConfig.enableTranslation) {
+          // Soniox only accepts a single target_language per session.
+          // Use the first configured language; warn if multiple were set.
+          const targetLanguage = this.sonioxConfig.translationTargetLanguages[0];
+
+          if (this.sonioxConfig.translationTargetLanguages.length > 1) {
+            this.logger.warn(
+              { configured: this.sonioxConfig.translationTargetLanguages, using: targetLanguage },
+              'Soniox supports one translation target language per session; using first configured language. Use ENGINE=gemini for multi-language translation.'
+            );
+          }
+
           configMessage.translation = {
             type: this.sonioxConfig.translationType,
-            target_languages: this.sonioxConfig.translationTargetLanguages
+            target_language: targetLanguage
           };
         }
 
