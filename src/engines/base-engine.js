@@ -1,5 +1,8 @@
-class BaseEngine {
+const EventEmitter = require('events');
+
+class BaseEngine extends EventEmitter {
   constructor(logger) {
+    super();
     this.logger = logger;
   }
 

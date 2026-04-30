@@ -35,6 +35,12 @@ function buildConfig() {
       reconnectDelayMs: toInt(process.env.RECONNECT_DELAY_MS, 3000),
       maxRetries: toInt(process.env.MAX_RETRIES, 0)
     },
+    captions: {
+      enabled: toBool(process.env.CAPTIONS_ENABLED, true),
+      segmentDurationMs: toInt(process.env.CAPTIONS_SEGMENT_DURATION_MS, 6000),
+      windowSegments: toInt(process.env.CAPTIONS_WINDOW_SEGMENTS, 5),
+      basePath: process.env.CAPTIONS_BASE_PATH || '/captions'
+    },
     engine,
     soniox: {
       apiKey: requiredEnv('SONIOX_API_KEY'),

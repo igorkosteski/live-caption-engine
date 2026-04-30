@@ -112,8 +112,31 @@ To add a new provider later:
 - `RECONNECT_DELAY_MS`: delay between retries
 - `MAX_RETRIES`: 0 = unlimited retries
 
-## 7. Notes
+## 7. Live Captions Output
+
+When captions are enabled, the service exposes live WebVTT output from the same HTTP server:
+
+- `GET /captions/live.vtt`: rolling WebVTT file with the retained live cue window
+- `GET /captions/index.m3u8`: HLS subtitle playlist referencing WebVTT segments
+- `GET /captions/segments/<n>.vtt`: individual WebVTT subtitle segment
+
+Useful environment variables:
+
+- `CAPTIONS_ENABLED`: enable or disable WebVTT output
+- `CAPTIONS_SEGMENT_DURATION_MS`: subtitle segment duration
+- `CAPTIONS_WINDOW_SEGMENTS`: number of recent segments to retain in memory
+- `CAPTIONS_BASE_PATH`: HTTP base path for caption endpoints
+
+Example local checks:
+
+```bash
+curl http://localhost:8080/captions/live.vtt
+curl http://localhost:8080/captions/index.m3u8
+```
+
+## 8. Notes
 
 - The service logs partial and finalized transcripts to stdout.
+- Finalized Soniox tokens are converted into timed WebVTT cues.
 - The Soniox stream is finalized when FFmpeg stream ends.
 - Use CloudWatch logs in ECS to consume transcript updates.

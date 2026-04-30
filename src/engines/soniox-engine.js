@@ -76,7 +76,8 @@ class SonioxEngine extends BaseEngine {
         }
 
         if (Array.isArray(message.tokens)) {
-          const finalTokens = message.tokens.filter((t) => t.is_final).map((t) => t.text).join('');
+          const finalizedTokens = message.tokens.filter((t) => t.is_final);
+          const finalTokens = finalizedTokens.map((t) => t.text).join('');
           const nonFinalTokens = message.tokens
             .filter((t) => !t.is_final)
             .map((t) => t.text)
@@ -84,6 +85,7 @@ class SonioxEngine extends BaseEngine {
 
           if (finalTokens) {
             this.finalText += finalTokens;
+            this.emitFinalCaption(finalizedTokens);
           }
 
           this.partialText = nonFinalTokens;
@@ -150,6 +152,28 @@ class SonioxEngine extends BaseEngine {
     }
 
     this.ws.send(buffer, { binary: true });
+  }
+
+  emitFinalCaption(tokens) {
+    const text = tokens.map((token) => token.text).join('').trim();
+
+    if (!text) {
+      return;
+    }
+
+    const startMs = tokens.find((token) => Number.isFinite(token.start_ms))?.start_ms;
+    const endMs = [...tokens].reverse().find((token) => Number.isFinite(token.end_ms))?.end_ms;
+
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      this.logger.warn({ tokens }, 'Skipping final caption without valid timing');
+      return;
+    }
+
+    this.emit('final-caption', {
+      startMs,
+      endMs,
+      text
+    });
   }
 
   async finalize() {

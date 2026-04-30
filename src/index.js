@@ -7,6 +7,7 @@ const logger = require('./logger');
 const { buildConfig } = require('./config');
 const { createEngine } = require('./engines');
 const RtmpStreamSession = require('./rtmp-stream-session');
+const LiveWebVtt = require('./captions/live-webvtt');
 
 function warnOnUnreachableRtmpHost(rtmpUrl) {
   let parsedUrl;
@@ -50,6 +51,41 @@ async function main() {
     engine
   });
 
+  const captions = config.captions.enabled
+    ? new LiveWebVtt({
+        logger,
+        segmentDurationMs: config.captions.segmentDurationMs,
+        windowSegments: config.captions.windowSegments,
+        basePath: config.captions.basePath
+      })
+    : null;
+
+  if (captions) {
+    engine.on('final-caption', (cue) => {
+      captions.addCue(cue);
+    });
+
+    app.get(`${config.captions.basePath}/live.vtt`, (_req, res) => {
+      res.type('text/vtt').send(captions.renderLiveVtt());
+    });
+
+    app.get(`${config.captions.basePath}/index.m3u8`, (_req, res) => {
+      res.type('application/vnd.apple.mpegurl').send(captions.renderPlaylist());
+    });
+
+    app.get(`${config.captions.basePath}/segments/:segmentIndex.vtt`, (req, res) => {
+      const segmentIndex = Number.parseInt(req.params.segmentIndex, 10);
+      const segment = captions.renderSegment(segmentIndex);
+
+      if (!segment) {
+        res.status(404).json({ ok: false, message: 'Caption segment not found' });
+        return;
+      }
+
+      res.type('text/vtt').send(segment);
+    });
+  }
+
   app.get('/healthz', (_req, res) => {
     res.status(200).json({ ok: true, engine: config.engine });
   });
@@ -59,7 +95,14 @@ async function main() {
   });
 
   const server = app.listen(config.app.port, () => {
-    logger.info({ port: config.app.port }, 'HTTP server listening');
+    logger.info(
+      {
+        port: config.app.port,
+        captionsEnabled: config.captions.enabled,
+        captionsBasePath: config.captions.basePath
+      },
+      'HTTP server listening'
+    );
   });
 
   await streamSession.start();
