@@ -27,7 +27,7 @@ function buildConfig() {
       logLevel: process.env.LOG_LEVEL || 'info'
     },
     stream: {
-      rtmpUrl: requiredEnv('RTMP_URL'),
+      rtmpUrl: process.env.RTMP_URL || '',  // optional — provided per-session via POST /sessions
       sampleRate: toInt(process.env.AUDIO_SAMPLE_RATE, 16000),
       channels: toInt(process.env.AUDIO_CHANNELS, 1),
       ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',

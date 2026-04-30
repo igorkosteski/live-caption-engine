@@ -53,11 +53,12 @@ describe('buildConfig', () => {
     });
   });
 
-  test('throws when RTMP_URL missing', () => {
+  test('RTMP_URL is optional (empty string allowed — provided per-session)', () => {
     withEnv({ RTMP_URL: '', ENGINE: 'soniox', SONIOX_API_KEY: 'k' }, () => {
       jest.resetModules();
       const { buildConfig } = require('../src/config');
-      expect(() => buildConfig()).toThrow('RTMP_URL');
+      const cfg = buildConfig();
+      expect(cfg.stream.rtmpUrl).toBe('');
     });
   });
 
