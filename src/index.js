@@ -86,46 +86,63 @@ async function main() {
 
       publisher.start();
 
-      // When translation is enabled, wire a second VTT track + publisher for the translated language.
-      if (config.soniox.enableTranslation) {
-        const translatedCaptions = new LiveWebVtt({
-          logger,
-          segmentDurationMs: config.captions.segmentDurationMs,
-          windowSegments: config.captions.windowSegments,
-          basePath: `${config.captions.basePath}/translated`
-        });
+      // When translation is enabled, wire one VTT track + publisher per target language.
+      if (config.soniox.enableTranslation && config.soniox.translationTargetLanguages.length > 0) {
+        const translatedPublishers = [];
+
+        // Map language code -> LiveWebVtt instance so the event handler can route by language.
+        const translatedCaptionsByLang = new Map();
+
+        for (const lang of config.soniox.translationTargetLanguages) {
+          const safeLang = lang.replace(/[^a-zA-Z0-9-]/g, '');
+
+          const translatedCaptions = new LiveWebVtt({
+            logger,
+            segmentDurationMs: config.captions.segmentDurationMs,
+            windowSegments: config.captions.windowSegments,
+            basePath: `${config.captions.basePath}/${safeLang}`
+          });
+
+          translatedCaptionsByLang.set(lang, translatedCaptions);
+
+          if (config.mediapackage.enabled) {
+            const translatedPublisher = new MediaPackagePublisher({
+              logger,
+              captions: translatedCaptions,
+              ingestUrl: config.mediapackage.ingestUrl,
+              awsRegion: config.mediapackage.awsRegion,
+              subtitlePath: `${config.mediapackage.translationSubtitlePath}-${safeLang}`
+            });
+
+            translatedPublisher.start();
+            translatedPublishers.push(translatedPublisher);
+          }
+
+          app.get(`${config.captions.basePath}/${safeLang}/live.vtt`, (_req, res) => {
+            res.type('text/vtt').send(translatedCaptions.renderLiveVtt());
+          });
+
+          app.get(`${config.captions.basePath}/${safeLang}/index.m3u8`, (_req, res) => {
+            res.type('application/vnd.apple.mpegurl').send(translatedCaptions.renderPlaylist());
+          });
+        }
 
         engine.on('final-caption-translated', (cue) => {
-          translatedCaptions.addCue(cue);
-        });
-
-        const translatedPublisher = new MediaPackagePublisher({
-          logger,
-          captions: translatedCaptions,
-          ingestUrl: config.mediapackage.ingestUrl,
-          awsRegion: config.mediapackage.awsRegion,
-          subtitlePath: config.mediapackage.translationSubtitlePath
-        });
-
-        translatedPublisher.start();
-
-        // Expose translated captions locally as well.
-        app.get(`${config.captions.basePath}/translated/live.vtt`, (_req, res) => {
-          res.type('text/vtt').send(translatedCaptions.renderLiveVtt());
-        });
-
-        app.get(`${config.captions.basePath}/translated/index.m3u8`, (_req, res) => {
-          res.type('application/vnd.apple.mpegurl').send(translatedCaptions.renderPlaylist());
-        });
-
-        // Expose shutdown for the translated publisher.
-        const origShutdownRef = publisher;
-        publisher = {
-          stop() {
-            origShutdownRef.stop();
-            translatedPublisher.stop();
+          const track = translatedCaptionsByLang.get(cue.language);
+          if (track) {
+            track.addCue(cue);
           }
-        };
+        });
+
+        if (translatedPublishers.length > 0) {
+          const origShutdownRef = publisher;
+          publisher = {
+            stop() {
+              origShutdownRef.stop();
+              for (const p of translatedPublishers) p.stop();
+            }
+          };
+        }
       }
     }
 

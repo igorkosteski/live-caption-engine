@@ -57,7 +57,13 @@ function buildConfig() {
         'wss://stt-rt.soniox.com/transcribe-websocket',
       enableTranslation: toBool(process.env.ENABLE_TRANSLATION, false),
       translationType: process.env.TRANSLATION_TYPE || 'one_way',
-      translationTargetLanguage: process.env.TRANSLATION_TARGET_LANGUAGE || 'en'
+      // Comma-separated BCP-47 codes, e.g. "en,de,fr"
+      translationTargetLanguages: (process.env.TRANSLATION_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGE || 'en')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      // BCP-47 code of the spoken source language; leave empty to let Soniox auto-detect.
+      translationSourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || ''
     }
   };
 

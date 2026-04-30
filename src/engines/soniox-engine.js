@@ -41,10 +41,14 @@ class SonioxEngine extends BaseEngine {
           max_endpoint_delay_ms: 1200
         };
 
+        if (this.sonioxConfig.translationSourceLanguage) {
+          configMessage.language_hints = [this.sonioxConfig.translationSourceLanguage];
+        }
+
         if (this.sonioxConfig.enableTranslation) {
           configMessage.translation = {
             type: this.sonioxConfig.translationType,
-            target_language: this.sonioxConfig.translationTargetLanguage
+            target_languages: this.sonioxConfig.translationTargetLanguages
           };
         }
 
