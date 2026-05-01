@@ -110,18 +110,7 @@
           "logs:PutLogEvents"
          ],
          "Effect": "Allow",
-         "Resource": {
-          "Fn::Join": [
-           "",
-           [
-            "arn:aws:logs:us-east-1:",
-            {
-             "Ref": "AWS::AccountId"
-            },
-            ":log-group:/aws/medialive/*"
-           ]
-          ]
-         }
+         "Resource": "arn:aws:logs:eu-central-1:336093159451:log-group:/aws/medialive/*"
         }
        ],
        "Version": "2012-10-17"
@@ -138,18 +127,7 @@
           "ssm:GetParameters"
          ],
          "Effect": "Allow",
-         "Resource": {
-          "Fn::Join": [
-           "",
-           [
-            "arn:aws:ssm:us-east-1:",
-            {
-             "Ref": "AWS::AccountId"
-            },
-            ":parameter/medialive*"
-           ]
-          ]
-         }
+         "Resource": "arn:aws:ssm:eu-central-1:336093159451:parameter/medialive*"
         }
        ],
        "Version": "2012-10-17"
@@ -157,7 +135,7 @@
       "PolicyName": "SsmRead"
      }
     ],
-    "RoleName": "live-caption-medialive-role-us-east-1"
+    "RoleName": "live-caption-medialive-role-eu-central-1"
    },
    "Metadata": {
     "aws:cdk:path": "LiveCaptionMedia/MediaLiveRole/Resource"
@@ -439,7 +417,7 @@
          "TLSv1.2"
         ]
        },
-       "DomainName": "live-caption.egress.us-east-1.mediapackagev2.amazonaws.com",
+       "DomainName": "live-caption.egress.eu-central-1.mediapackagev2.amazonaws.com",
        "Id": "LiveCaptionMediaDistributionOrigin1B61A0A63",
        "OriginAccessControlId": {
         "Fn::GetAtt": [
@@ -485,11 +463,7 @@
           "Fn::Join": [
            "",
            [
-            "arn:aws:cloudfront::",
-            {
-             "Ref": "AWS::AccountId"
-            },
-            ":distribution/",
+            "arn:aws:cloudfront::336093159451:distribution/",
             {
              "Ref": "Distribution830FAC52"
             }
