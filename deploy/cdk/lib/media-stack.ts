@@ -370,9 +370,12 @@ export class MediaStack extends cdk.Stack {
       enableIpv6: true
     });
 
-    // Attach the OAC — L2 Distribution doesn't expose this directly.
+    // Attach the OAC and remove the CustomOriginConfig that HttpOrigin generates.
+    // CloudFront requires no CustomOriginConfig on a mediapackagev2 OAC origin —
+    // the origin type is inferred from the domain when no config block is present.
     const cfnDist = distribution.node.defaultChild as cloudfront.CfnDistribution;
     cfnDist.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', oac.attrId);
+    cfnDist.addPropertyDeletionOverride('DistributionConfig.Origins.0.CustomOriginConfig');
 
     // ── MediaPackage V2 endpoint resource policy ───────────────────────────────
     // Allows CloudFront (scoped to this distribution) to call mediapackagev2:GetObject.
