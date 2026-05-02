@@ -70,14 +70,14 @@ docker compose down
 1. Build ECS image:
 
 ```bash
-docker build -f Dockerfile.ecs -t live-caption-engine:ecs .
+docker build -f Dockerfile.ecs -t live-caption-engine:latest .
 ```
 
 2. Tag and push image to ECR:
 
 ```bash
-docker tag live-caption-engine:ecs <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:ecs
-docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:ecs
+docker tag live-caption-engine:latest <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
+docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
 ```
 
 3. Create/Update ECS task definition from template:
