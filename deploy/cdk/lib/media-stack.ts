@@ -55,10 +55,10 @@ export class MediaStack extends cdk.Stack {
   public readonly mediaPackageIngestUrl: string;
 
   /** CloudFront distribution HTTPS root URL. */
-  public readonly playbackUrl: string;
+  // public readonly playbackUrl: string;
 
   /** CloudFront HLS master playlist URL ready to plug into a video player. */
-  public readonly hlsPlaylistUrl: string;
+  // public readonly hlsPlaylistUrl: string;
 
   constructor(scope: Construct, id: string, props: MediaStackProps = {}) {
     super(scope, id, props);
@@ -345,80 +345,82 @@ export class MediaStack extends cdk.Stack {
     const mpOriginPath   = `/out/v1/${GROUP_NAME}/${CHANNEL_NAME}/${ENDPOINT_NAME}`;
 
     // ── CloudFront distribution ────────────────────────────────────────────────
+    // Use CfnDistribution directly so the origin config exactly matches the AWS
+    // documented pattern for MediaPackage V2 + OAC: CustomOriginConfig with only
+    // HTTPSPort + OriginProtocolPolicy, plus OriginAccessControlId.  CDK L2
+    // HttpOrigin injects extra fields (OriginSSLProtocols, timeouts) that cause
+    // CloudFront to reject the "origin type vs OAC origin type" validation.
 
-    const distribution = new cloudfront.Distribution(this, 'Distribution', {
-      comment: `${GROUP_NAME} live stream`,
-      defaultBehavior: {
-        origin: new origins.HttpOrigin(mpOriginDomain, {
-          originPath: mpOriginPath,
-          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
-          readTimeout: cdk.Duration.seconds(30),
-          keepaliveTimeout: cdk.Duration.seconds(60)
-        }),
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        // CACHING_DISABLED ensures live manifests are always fresh.
-        // For production, create separate behaviors:
-        //   *.m3u8  → short TTL (2–4 s)
-        //   *.ts    → long TTL (segments are immutable)
-        //   *.vtt   → short TTL
-        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
-        compress: false   // Never compress media streams.
-      },
-      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
-      httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-      enableIpv6: true
-    });
-
-    // Attach the OAC and remove the CustomOriginConfig that HttpOrigin generates.
-    // CloudFront requires no CustomOriginConfig on a mediapackagev2 OAC origin —
-    // the origin type is inferred from the domain when no config block is present.
-    const cfnDist = distribution.node.defaultChild as cloudfront.CfnDistribution;
-    cfnDist.addPropertyOverride('DistributionConfig.Origins.0.OriginAccessControlId', oac.attrId);
-    cfnDist.addPropertyDeletionOverride('DistributionConfig.Origins.0.CustomOriginConfig');
+    // const cfnDist = new cloudfront.CfnDistribution(this, 'Distribution', {
+    //   distributionConfig: {
+    //     comment: `${GROUP_NAME} live stream`,
+    //     enabled: true,
+    //     httpVersion: 'http2and3',
+    //     ipv6Enabled: true,
+    //     priceClass: 'PriceClass_100',
+    //     origins: [{
+    //       id: 'MediaPackageV2',
+    //       domainName: mpOriginDomain,
+    //       originPath: mpOriginPath,
+    //       originAccessControlId: oac.attrId,
+    //       customOriginConfig: {
+    //         httpsPort: 443,
+    //         originProtocolPolicy: 'https-only',
+    //       },
+    //     }],
+    //     defaultCacheBehavior: {
+    //       targetOriginId: 'MediaPackageV2',
+    //       viewerProtocolPolicy: 'redirect-to-https',
+    //       // CACHING_DISABLED managed policy ID — ensures live manifests are always fresh.
+    //       cachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+    //       allowedMethods: ['GET', 'HEAD'],
+    //       compress: false,
+    //     },
+    //   },
+    // });
 
     // ── MediaPackage V2 endpoint resource policy ───────────────────────────────
     // Allows CloudFront (scoped to this distribution) to call mediapackagev2:GetObject.
 
-    const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
+    // const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${cfnDist.ref}`;
 
     // Using CfnResource directly — safer than assuming the CDK construct name.
-    new cdk.CfnResource(this, 'EndpointPolicy', {
-      type: 'AWS::MediaPackageV2::OriginEndpointPolicy',
-      properties: {
-        ChannelGroupName: GROUP_NAME,
-        ChannelName: CHANNEL_NAME,
-        OriginEndpointName: ENDPOINT_NAME,
-        Policy: {
-          Version: '2012-10-17',
-          Statement: [{
-            Sid: 'AllowCloudFrontOAC',
-            Effect: 'Allow',
-            Principal: { Service: 'cloudfront.amazonaws.com' },
-            Action: 'mediapackagev2:GetObject',
-            Resource: originEndpoint.attrArn,
-            Condition: {
-              StringEquals: { 'AWS:SourceArn': distributionArn }
-            }
-          }]
-        }
-      }
-    });
+    // new cdk.CfnResource(this, 'EndpointPolicy', {
+    //   type: 'AWS::MediaPackageV2::OriginEndpointPolicy',
+    //   properties: {
+    //     ChannelGroupName: GROUP_NAME,
+    //     ChannelName: CHANNEL_NAME,
+    //     OriginEndpointName: ENDPOINT_NAME,
+    //     Policy: {
+    //       Version: '2012-10-17',
+    //       Statement: [{
+    //         Sid: 'AllowCloudFrontOAC',
+    //         Effect: 'Allow',
+    //         Principal: { Service: 'cloudfront.amazonaws.com' },
+    //         Action: 'mediapackagev2:GetObject',
+    //         Resource: originEndpoint.attrArn,
+    //         Condition: {
+    //           StringEquals: { 'AWS:SourceArn': distributionArn }
+    //         }
+    //       }]
+    //     }
+    //   }
+    // });
 
     // ── Expose values for cross-stack references ───────────────────────────────
 
     // Primary ingest URL — the live-caption-engine PUTs VTT/AAC segments here.
     this.mediaPackageIngestUrl = cdk.Fn.select(0, mpChannel.attrIngestEndpointUrls);
 
-    this.playbackUrl   = `https://${distribution.distributionDomainName}`;
-    this.hlsPlaylistUrl = `https://${distribution.distributionDomainName}/${MANIFEST_NAME}/index.m3u8`;
+    // this.playbackUrl   = `https://${cfnDist.attrDomainName}`;
+    // this.hlsPlaylistUrl = `https://${cfnDist.attrDomainName}/${MANIFEST_NAME}/index.m3u8`;
 
     // ── CloudFormation outputs ─────────────────────────────────────────────────
 
-    new cdk.CfnOutput(this, 'HlsPlaylistUrl', {
-      value: this.hlsPlaylistUrl,
-      description: 'HLS master playlist URL — paste into VLC, Quicktime, or an HLS.js player'
-    });
+    // new cdk.CfnOutput(this, 'HlsPlaylistUrl', {
+    //   value: this.hlsPlaylistUrl,
+    //   description: 'HLS master playlist URL — paste into VLC, Quicktime, or an HLS.js player'
+    // });
 
     new cdk.CfnOutput(this, 'MediaPackageIngestUrl', {
       value: this.mediaPackageIngestUrl,
@@ -440,9 +442,9 @@ export class MediaStack extends cdk.Stack {
       description: 'Copy to console or: aws medialive describe-input --input-id <id> to find RTMP URL(s)'
     });
 
-    new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
-      value: distribution.distributionId,
-      description: 'CloudFront distribution ID'
-    });
+    // new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
+    //   value: cfnDist.ref,
+    //   description: 'CloudFront distribution ID'
+    // });
   }
 }
