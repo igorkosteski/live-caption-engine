@@ -1,5 +1,6 @@
 node_modules/
 deploy/cdk/cdk.out/
+deploy/cdk/dist/
 .env
 npm-debug.log*
 yarn-debug.log*

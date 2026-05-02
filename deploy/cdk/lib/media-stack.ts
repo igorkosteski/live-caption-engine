@@ -119,7 +119,7 @@ export class MediaStack extends cdk.Stack {
         MediaPackageV2Ingest: new iam.PolicyDocument({
           statements: [new iam.PolicyStatement({
             actions: ['mediapackagev2:PutObject'],
-            resources: [`${mpChannel.attrArn}/*`]
+            resources: [mpChannel.attrArn]
           })]
         }),
         CloudWatchLogs: new iam.PolicyDocument({
