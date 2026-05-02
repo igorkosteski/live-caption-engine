@@ -152,9 +152,9 @@ aws ecr get-login-password --region <REGION> | \
   docker login --username AWS --password-stdin <EcrRepositoryUri from output>
 
 # Build and push from the project root
-docker build -t live-caption-engine:latest .
-docker tag  live-caption-engine:latest <EcrRepositoryUri>:latest
-docker push <EcrRepositoryUri>:latest
+docker build -t live-caption-engine:ecs .
+docker tag  live-caption-engine:ecs <EcrRepositoryUri>:ecs
+docker push <EcrRepositoryUri>:ecs
 ```
 
 After pushing, force a new ECS deployment so Fargate pulls the new image:

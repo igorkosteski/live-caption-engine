@@ -76,8 +76,8 @@ docker build -f Dockerfile.ecs -t live-caption-engine:ecs .
 2. Tag and push image to ECR:
 
 ```bash
-docker tag live-caption-engine:ecs <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
-docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
+docker tag live-caption-engine:ecs <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:ecs
+docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:ecs
 ```
 
 3. Create/Update ECS task definition from template:

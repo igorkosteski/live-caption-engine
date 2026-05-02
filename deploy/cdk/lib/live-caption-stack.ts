@@ -371,7 +371,7 @@ export class LiveCaptionStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'EcrRepositoryUri', {
       value: this.repository.repositoryUri,
-      description: 'ECR URI — docker push <this>:latest'
+      description: 'ECR URI — docker push <this>:ecs'
     });
 
     new cdk.CfnOutput(this, 'SonioxSecretArn', {
