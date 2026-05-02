@@ -282,7 +282,7 @@ export class LiveCaptionStack extends cdk.Stack {
       description: 'live-caption-engine ECS tasks',
       allowAllOutbound: true   // Needs to reach Soniox/Gemini WS + MediaPackage.
     });
-    serviceSg.addIngressRule(albSg, ec2.Port.tcp(8080), 'ALB → container');
+    serviceSg.addIngressRule(albSg, ec2.Port.tcp(8080), 'ALB to container');
 
     // ── ALB ───────────────────────────────────────────────────────────────────
     this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
