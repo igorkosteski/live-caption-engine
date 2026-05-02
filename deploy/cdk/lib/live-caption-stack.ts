@@ -80,6 +80,12 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
    * @default 10
    */
   ecrMaxImageCount?: number;
+
+  /**
+   * If provided, import this existing ECR repository by name instead of creating a new one.
+   * The lifecycle rule and imageScanOnPush settings are not applied to imported repositories.
+   */
+  repositoryName?: string;
 }
 
 export class LiveCaptionStack extends cdk.Stack {
@@ -105,6 +111,7 @@ export class LiveCaptionStack extends cdk.Stack {
     const ecrMaxImageCount    = props.ecrMaxImageCount    ?? 10;
     const mediapackageEnabled = props.mediapackageEnabled ?? false;
     const dubbingPollyEnabled = props.dubbingPollyEnabled ?? false;
+    const repositoryName      = props.repositoryName ?? 'live-caption-engine';
 
     // ── VPC ────────────────────────────────────────────────────────────────────
     const vpc = props.vpcId
@@ -119,19 +126,21 @@ export class LiveCaptionStack extends cdk.Stack {
         });
 
     // ── ECR repository ─────────────────────────────────────────────────────────
-    this.repository = new ecr.Repository(this, 'Repository', {
-      repositoryName: 'live-caption-engine',
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      imageScanOnPush: true,
-      lifecycleRules: [
-        {
-          rulePriority: 1,
-          description: 'Keep last N images',
-          maxImageCount: ecrMaxImageCount,
-          tagStatus: ecr.TagStatus.ANY
-        }
-      ]
-    });
+    this.repository = props.repositoryName
+      ? ecr.Repository.fromRepositoryName(this, 'Repository', repositoryName) as ecr.Repository
+      : new ecr.Repository(this, 'Repository', {
+          repositoryName,
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+          imageScanOnPush: true,
+          lifecycleRules: [
+            {
+              rulePriority: 1,
+              description: 'Keep last N images',
+              maxImageCount: ecrMaxImageCount,
+              tagStatus: ecr.TagStatus.ANY
+            }
+          ]
+        });
 
     // ── ECS cluster ────────────────────────────────────────────────────────────
     this.cluster = new ecs.Cluster(this, 'Cluster', {

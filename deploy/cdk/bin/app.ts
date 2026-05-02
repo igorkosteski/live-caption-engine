@@ -17,7 +17,8 @@ const env = {
 const engine             = (app.node.tryGetContext('engine')      ?? 'soniox') as 'soniox' | 'gemini';
 const channelClass       = (app.node.tryGetContext('channelClass') ?? 'SINGLE_PIPELINE') as 'STANDARD' | 'SINGLE_PIPELINE';
 const dubbingPollyEnabled = (app.node.tryGetContext('dubbingPollyEnabled') ?? 'false') === 'true';
-const vpcId              = app.node.tryGetContext('vpcId') as string | undefined;
+const vpcId              = app.node.tryGetContext('vpcId')            as string | undefined;
+const repositoryName     = app.node.tryGetContext('repositoryName')   as string | undefined;
 
 // ── Stack 1: MediaLive + MediaPackage V2 + CloudFront ─────────────────────────
 const mediaStack = new MediaStack(app, 'LiveCaptionMedia', {
@@ -48,6 +49,7 @@ const liveCaptionStack = new LiveCaptionStack(app, 'LiveCaptionEngine', {
   memoryLimitMiB:  1024,
   publicLoadBalancer: true,
   vpcId,
+  repositoryName,
   ecrMaxImageCount: 10,
   description: 'Live caption engine — ECS Fargate + ALB',
   tags: { Project: 'live-caption-engine', ManagedBy: 'CDK' }
