@@ -138,6 +138,24 @@ export class MediaStack extends cdk.Stack {
       }
     });
 
+    const channelPolicy = new mediapackagev2.CfnChannelPolicy(this, 'ChannelPolicy', {
+      channelGroupName: GROUP_NAME,
+      channelName: CHANNEL_NAME,
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{
+          Sid: 'AllowMediaLivePutObject',
+          Effect: 'Allow',
+          Principal: { 
+            AWS: mediaLiveRole.roleArn 
+          },
+          Action: 'mediapackagev2:PutObject',
+          Resource: mpChannel.attrArn
+        }]
+      }
+    });
+    channelPolicy.addDependency(mpChannel);
+
     // ── MediaLive input security group ─────────────────────────────────────────
 
     const inputSg = new medialive.CfnInputSecurityGroup(this, 'InputSg', {
@@ -215,7 +233,7 @@ export class MediaStack extends cdk.Stack {
               flickerAq: 'ENABLED',
               forceFieldPictures: 'DISABLED',
               framerateControl: 'SPECIFIED',
-              framerateNumerator: 30,
+              framerateNumerator: 25,
               framerateDenominator: 1,
               gopBReference: 'DISABLED',
               gopClosedCadence: 1,
