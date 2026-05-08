@@ -123,12 +123,27 @@ anchor for all downstream synchronisation.
 
 ### 3b. Caption engine audio (nginx-rtmp tap — Option C)
 
-MediaLive has a **second output group** (not yet in CDK — a known TODO) that
-pushes the same stream via RTMP to a small nginx-rtmp relay running inside the
-private VPC subnet. The live-caption-engine reads from that relay URL.
+MediaLive has a **second output group** (`NginxRtmpTap`) that pushes the same
+stream via RTMP to a small nginx-rtmp relay running inside the private VPC
+subnet. The live-caption-engine reads from that relay URL.
 
-Until that second output group is added, the operator manually provides any
-RTMP or HLS URL the engine can reach (see section 5).
+This output group is now supported in CDK. Pass the `nginxRtmpUrl` prop to
+`MediaStack` (e.g. `rtmp://10.0.x.x:1935/live/primary`) and CDK will create
+both destinations and output groups in the MediaLive channel:
+
+```typescript
+new MediaStack(app, 'LiveCaptionMedia', {
+  nginxRtmpUrl: 'rtmp://<nginx-rtmp-private-ip>:1935/live/primary',
+  // ... other props
+});
+```
+
+For `STANDARD` channel class a second-pipeline URL is derived automatically
+by appending `-b` to the stream-name component
+(`rtmp://<host>:1935/live/primary-b`).
+
+Until an nginx-rtmp server is deployed and its IP is known, the operator can
+provide any RTMP or HLS URL the engine can reach (see section 5).
 
 ### 3c. PCM pipeline inside live-caption-engine
 
@@ -329,23 +344,26 @@ Push RTMP from OBS / FFmpeg to the URL from Step 4.
 
 ### Step 7 — Start the caption engine session
 
-Until the nginx-rtmp tap (Option C second output group) is deployed, provide
-an RTMP URL the engine can reach. Options:
-
-- **HLS URL** (works today, ~6–12 s extra latency):
-  use `HlsPlaylistUrl` from CDK output as `rtmpUrl`.
-- **Direct RTMP** (lower latency): run the encoder dual-push: one to MediaLive,
-  one to a URL the engine can connect to.
+If `nginxRtmpUrl` was passed to `MediaStack` during deploy, MediaLive is
+already pushing an RTMP tap to that relay. Use the `NginxRtmpTapUrl` CDK
+output as the `rtmpUrl`:
 
 ```bash
 curl -X POST http://<AlbDnsName>/sessions \
   -H "Content-Type: application/json" \
   -d '{
-    "rtmpUrl": "<HlsPlaylistUrl or direct RTMP>",
+    "rtmpUrl": "<NginxRtmpTapUrl>",
     "languages": ["de", "fr"],
     "dubbingLanguages": ["de"]
   }'
 ```
+
+If the nginx-rtmp tap is not yet deployed, fall back to one of these options:
+
+- **HLS URL** (works today, ~6–12 s extra latency):
+  use `HlsPlaylistUrl` from CDK output as `rtmpUrl`.
+- **Direct RTMP** (lower latency): run the encoder dual-push: one to MediaLive,
+  one to a URL the engine can connect to.
 
 ### Step 8 — Verify playback
 
@@ -388,7 +406,7 @@ actively streaming — it is the largest cost driver.
 
 | Item | Status |
 |---|---|
-| nginx-rtmp VPC relay (Option C second output group) | Not yet in CDK |
+| nginx-rtmp VPC relay (Option C second output group) | Pass `nginxRtmpUrl` prop to `MediaStack` |
 | `EXT-X-PROGRAM-DATE-TIME` in subtitle playlists | Not yet implemented |
 | Wall-clock epoch alignment in `LiveWebVtt` | Not yet implemented |
 | HTTPS listener on ALB (ACM certificate) | Not yet in CDK |

@@ -44,6 +44,21 @@ export interface MediaStackProps extends cdk.StackProps {
    * @default ['0.0.0.0/0']
    */
   rtmpAllowedCidrs?: string[];
+
+  /**
+   * RTMP URL of the nginx-rtmp relay for the caption-engine audio tap.
+   * When provided, MediaLive adds a second RTMP output group that pushes
+   * the live stream here so live-caption-engine can read it at low latency
+   * instead of polling the HLS origin.
+   *
+   * Format: `rtmp://<host>:<port>/<app>/<streamName>`
+   *
+   * For STANDARD channel class a second-pipeline URL is derived automatically
+   * by appending '-b' to the stream-name path component.
+   *
+   * @default undefined — RTMP tap output group is not created
+   */
+  nginxRtmpUrl?: string;
 }
 
 export class MediaStack extends cdk.Stack {
@@ -183,6 +198,119 @@ export class MediaStack extends cdk.Stack {
     const mp2Url0 = cdk.Fn.select(0, mp2Urls);
     const mp2Url1 = channelClass === 'STANDARD' ? cdk.Fn.select(1, mp2Urls) : mp2Url0;
 
+    const nginxRtmpUrl = props.nginxRtmpUrl;
+
+    // ── MediaLive destinations ─────────────────────────────────────────────────
+    // 'mp2'        → MediaPackage V2 ingest (always present).
+    // 'nginx-rtmp' → nginx relay for caption-engine audio tap (optional).
+    const mlDestinations: medialive.CfnChannel.OutputDestinationProperty[] = [{
+      id: 'mp2',
+      settings: [
+        { url: mp2Url0 },
+        ...(channelClass === 'STANDARD' ? [{ url: mp2Url1 }] : [])
+      ]
+    }];
+
+    if (nginxRtmpUrl) {
+      // STANDARD class requires 2 destination URLs; derive the second by
+      // appending '-b' to the stream-name path component.
+      const nginxRtmpUrlB = nginxRtmpUrl.replace(/\/([^/]+)$/, '/$1-b');
+      mlDestinations.push({
+        id: 'nginx-rtmp',
+        settings: [
+          { url: nginxRtmpUrl },
+          ...(channelClass === 'STANDARD' ? [{ url: nginxRtmpUrlB }] : [])
+        ]
+      });
+    }
+
+    // ── MediaLive output groups ────────────────────────────────────────────────
+    // Group 1 (always): HLS → MediaPackage V2  (broadcast video + audio).
+    // Group 2 (optional): RTMP → nginx-rtmp relay (caption-engine audio tap).
+    const mlOutputGroups: medialive.CfnChannel.OutputGroupProperty[] = [{
+      name: 'MediaPackageV2',
+      outputGroupSettings: {
+        hlsGroupSettings: {
+          destination: { destinationRefId: 'mp2' },
+          hlsCdnSettings: {
+            hlsBasicPutSettings: {
+              connectionRetryInterval: 30,
+              filecacheDuration: 300,
+              numRetries: 10,
+              restartDelay: 15
+            }
+          },
+          inputLossAction: 'EMIT_OUTPUT',
+          manifestCompression: 'NONE',
+          manifestDurationFormat: 'FLOATING_POINT',
+          mode: 'LIVE',
+          outputSelection: 'MANIFESTS_AND_SEGMENTS',
+          programDateTime: 'INCLUDE',
+          programDateTimePeriod: 1,
+          segmentLength: segmentDurationSeconds,
+          segmentsPerSubdirectory: 10000,
+          streamInfResolution: 'INCLUDE',
+          timedMetadataId3Frame: 'PRIV',
+          timedMetadataId3Period: 10,
+          tsFileMode: 'SEGMENTED_FILES'
+        }
+      },
+      outputs: [{
+        outputName: 'hls_720p',
+        videoDescriptionName: 'video_720p',
+        audioDescriptionNames: ['audio_aac'],
+        outputSettings: {
+          hlsOutputSettings: {
+            nameModifier: '_720p',
+            hlsSettings: {
+              standardHlsSettings: {
+                m3U8Settings: {
+                  audioFramesPerPes: 4,
+                  audioPids: '492-498',
+                  ecmPid: '8182',
+                  pcrControl: 'PCR_EVERY_PES_PACKET',
+                  pmtPid: '480',
+                  programNum: 1,
+                  scte35Behavior: 'NO_PASSTHROUGH',
+                  scte35Pid: '500',
+                  timedMetadataBehavior: 'NO_PASSTHROUGH',
+                  videoPid: '481'
+                }
+              }
+            }
+          }
+        }
+      }]
+    }];
+
+    if (nginxRtmpUrl) {
+      // RTMP tap: push the same video+audio to the nginx-rtmp relay so the
+      // caption engine can connect at low latency without going through HLS.
+      mlOutputGroups.push({
+        name: 'NginxRtmpTap',
+        outputGroupSettings: {
+          rtmpGroupSettings: {
+            authenticationScheme: 'COMMON',
+            cacheLength: 30,
+            cacheFullBehavior: 'DISCONNECT_IMMEDIATELY',
+            restartDelay: 15
+          }
+        },
+        outputs: [{
+          outputName: 'rtmp_tap',
+          videoDescriptionName: 'video_720p',
+          audioDescriptionNames: ['audio_aac'],
+          outputSettings: {
+            rtmpOutputSettings: {
+              destination: { destinationRefId: 'nginx-rtmp' },
+              connectionRetryInterval: 5,
+              numRetries: 10
+            }
+          }
+        }]
+      });
+    }
+
     const mlChannel = new medialive.CfnChannel(this, 'MlChannel', {
       name: 'live-caption-channel',
       channelClass,
@@ -206,14 +334,7 @@ export class MediaStack extends cdk.Stack {
           captionSelectors: []
         }
       }],
-      // Destination: MediaPackage V2 ingest endpoints.
-      destinations: [{
-        id: 'mp2',
-        settings: [
-          { url: mp2Url0 },
-          ...(channelClass === 'STANDARD' ? [{ url: mp2Url1 }] : [])
-        ]
-      }],
+      destinations: mlDestinations,
       encoderSettings: {
         // ── Video ──────────────────────────────────────────────────────────────
         videoDescriptions: [{
@@ -275,62 +396,8 @@ export class MediaStack extends cdk.Stack {
             }
           }
         }],
-        // ── HLS output → MediaPackage V2 ───────────────────────────────────────
-        outputGroups: [{
-          name: 'MediaPackageV2',
-          outputGroupSettings: {
-            hlsGroupSettings: {
-              destination: { destinationRefId: 'mp2' },
-              hlsCdnSettings: {
-                hlsBasicPutSettings: {
-                  connectionRetryInterval: 30,
-                  filecacheDuration: 300,
-                  numRetries: 10,
-                  restartDelay: 15
-                }
-              },
-              inputLossAction: 'EMIT_OUTPUT',
-              manifestCompression: 'NONE',
-              manifestDurationFormat: 'FLOATING_POINT',
-              mode: 'LIVE',
-              outputSelection: 'MANIFESTS_AND_SEGMENTS',
-              programDateTime: 'INCLUDE',
-              programDateTimePeriod: 1,
-              segmentLength: segmentDurationSeconds,
-              segmentsPerSubdirectory: 10000,
-              streamInfResolution: 'INCLUDE',
-              timedMetadataId3Frame: 'PRIV',
-              timedMetadataId3Period: 10,
-              tsFileMode: 'SEGMENTED_FILES'
-            }
-          },
-          outputs: [{
-            outputName: 'hls_720p',
-            videoDescriptionName: 'video_720p',
-            audioDescriptionNames: ['audio_aac'],
-            outputSettings: {
-              hlsOutputSettings: {
-                nameModifier: '_720p',
-                hlsSettings: {
-                  standardHlsSettings: {
-                    m3U8Settings: {
-                      audioFramesPerPes: 4,
-                      audioPids: '492-498',
-                      ecmPid: '8182',
-                      pcrControl: 'PCR_EVERY_PES_PACKET',
-                      pmtPid: '480',
-                      programNum: 1,
-                      scte35Behavior: 'NO_PASSTHROUGH',
-                      scte35Pid: '500',
-                      timedMetadataBehavior: 'NO_PASSTHROUGH',
-                      videoPid: '481'
-                    }
-                  }
-                }
-              }
-            }
-          }]
-        }],
+        // ── Output groups (built above; includes nginx-rtmp tap when configured) ──
+        outputGroups: mlOutputGroups,
         // ── Global ─────────────────────────────────────────────────────────────
         timecodeConfig: { source: 'EMBEDDED' },
         globalConfiguration: {
@@ -459,6 +526,13 @@ export class MediaStack extends cdk.Stack {
       value: rtmpInput.attrArn,
       description: 'Copy to console or: aws medialive describe-input --input-id <id> to find RTMP URL(s)'
     });
+
+    if (nginxRtmpUrl) {
+      new cdk.CfnOutput(this, 'NginxRtmpTapUrl', {
+        value: nginxRtmpUrl,
+        description: 'nginx-rtmp relay URL that MediaLive pushes to — use this as rtmpUrl when starting a caption session'
+      });
+    }
 
     // new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
     //   value: cfnDist.ref,
