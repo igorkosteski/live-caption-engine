@@ -212,14 +212,19 @@ export class MediaStack extends cdk.Stack {
     }];
 
     if (nginxRtmpUrl) {
-      // STANDARD class requires 2 destination URLs; derive the second by
-      // appending '-b' to the stream-name path component.
-      const nginxRtmpUrlB = nginxRtmpUrl.replace(/\/([^/]+)$/, '/$1-b');
+      // MediaLive requires the stream name to be set separately from the URL.
+      // Split rtmp://host:port/app/streamName → base URL + stream name.
+      const lastSlash      = nginxRtmpUrl.lastIndexOf('/');
+      const nginxBaseUrl   = nginxRtmpUrl.substring(0, lastSlash);    // rtmp://host:port/app
+      const nginxStreamName = nginxRtmpUrl.substring(lastSlash + 1);  // e.g. 'primary'
+      // STANDARD class needs a second pipeline stream name.
+      const nginxStreamNameB = `${nginxStreamName}-b`;
+
       mlDestinations.push({
         id: 'nginx-rtmp',
         settings: [
-          { url: nginxRtmpUrl },
-          ...(channelClass === 'STANDARD' ? [{ url: nginxRtmpUrlB }] : [])
+          { url: nginxBaseUrl, streamName: nginxStreamName },
+          ...(channelClass === 'STANDARD' ? [{ url: nginxBaseUrl, streamName: nginxStreamNameB }] : [])
         ]
       });
     }

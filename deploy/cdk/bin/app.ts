@@ -30,7 +30,9 @@ const mediaStack = new MediaStack(app, 'LiveCaptionMedia', {
   // Restrict to your encoder's IP in production, e.g. ['203.0.113.10/32']
   rtmpAllowedCidrs: ['0.0.0.0/0'],
   description: 'Live caption engine — MediaLive + MediaPackage V2 + CloudFront',
-  tags: { Project: 'live-caption-engine', ManagedBy: 'CDK' }
+  tags: { Project: 'live-caption-engine', ManagedBy: 'CDK' },
+  nginxRtmpUrl: 'rtmp://3.122.10.136:1935/live/primary'
+  // nginxRtmpUrl: 'rtmp://<your-nginx-host>:1935/<app>/<stream>'  // Set when you have an nginx-rtmp relay for the caption engine audio tap.
 });
 
 // ── Stack 2: ECS Fargate + ALB (live-caption-engine) ─────────────────────────
