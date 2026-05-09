@@ -46,19 +46,27 @@ export interface MediaStackProps extends cdk.StackProps {
   rtmpAllowedCidrs?: string[];
 
   /**
-   * RTMP URL of the nginx-rtmp relay for the caption-engine audio tap.
-   * When provided, MediaLive adds a second RTMP output group that pushes
-   * the live stream here so live-caption-engine can read it at low latency
-   * instead of polling the HLS origin.
+   * Base RTMP URL of the nginx-rtmp relay, WITHOUT the stream name.
+   * e.g. `rtmp://<host>:1935/live`
    *
-   * Format: `rtmp://<host>:<port>/<app>/<streamName>`
-   *
-   * For STANDARD channel class a second-pipeline URL is derived automatically
-   * by appending '-b' to the stream-name path component.
+   * When provided together with nginxRtmpStreamName, MediaLive adds a second
+   * RTMP output group that pushes the live stream to the relay so the
+   * live-caption-engine can pull it at low latency instead of going via HLS.
    *
    * @default undefined — RTMP tap output group is not created
    */
-  nginxRtmpUrl?: string;
+  nginxRtmpBaseUrl?: string;
+
+  /**
+   * Stream name MediaLive pushes to the nginx-rtmp relay.
+   * e.g. `primary`  →  full URL becomes `<nginxRtmpBaseUrl>/primary`
+   *
+   * For STANDARD channel class a second-pipeline stream `<name>-b` is
+   * derived automatically.
+   *
+   * @default 'primary'
+   */
+  nginxRtmpStreamName?: string;
 }
 
 export class MediaStack extends cdk.Stack {
@@ -198,7 +206,8 @@ export class MediaStack extends cdk.Stack {
     const mp2Url0 = cdk.Fn.select(0, mp2Urls);
     const mp2Url1 = channelClass === 'STANDARD' ? cdk.Fn.select(1, mp2Urls) : mp2Url0;
 
-    const nginxRtmpUrl = props.nginxRtmpUrl;
+    const nginxRtmpBaseUrl    = props.nginxRtmpBaseUrl;
+    const nginxRtmpStreamName = props.nginxRtmpStreamName ?? 'primary';
 
     // ── MediaLive destinations ─────────────────────────────────────────────────
     // 'mp2'        → MediaPackage V2 ingest (always present).
@@ -211,20 +220,13 @@ export class MediaStack extends cdk.Stack {
       ]
     }];
 
-    if (nginxRtmpUrl) {
-      // MediaLive requires the stream name to be set separately from the URL.
-      // Split rtmp://host:port/app/streamName → base URL + stream name.
-      const lastSlash      = nginxRtmpUrl.lastIndexOf('/');
-      const nginxBaseUrl   = nginxRtmpUrl.substring(0, lastSlash);    // rtmp://host:port/app
-      const nginxStreamName = nginxRtmpUrl.substring(lastSlash + 1);  // e.g. 'primary'
-      // STANDARD class needs a second pipeline stream name.
-      const nginxStreamNameB = `${nginxStreamName}-b`;
-
+    if (nginxRtmpBaseUrl) {
+      const nginxStreamNameB = `${nginxRtmpStreamName}-b`;
       mlDestinations.push({
         id: 'nginx-rtmp',
         settings: [
-          { url: nginxBaseUrl, streamName: nginxStreamName },
-          ...(channelClass === 'STANDARD' ? [{ url: nginxBaseUrl, streamName: nginxStreamNameB }] : [])
+          { url: nginxRtmpBaseUrl, streamName: nginxRtmpStreamName },
+          ...(channelClass === 'STANDARD' ? [{ url: nginxRtmpBaseUrl, streamName: nginxStreamNameB }] : [])
         ]
       });
     }
@@ -288,7 +290,7 @@ export class MediaStack extends cdk.Stack {
       }]
     }];
 
-    if (nginxRtmpUrl) {
+    if (nginxRtmpBaseUrl) {
       // RTMP tap: push the same video+audio to the nginx-rtmp relay so the
       // caption engine can connect at low latency without going through HLS.
       mlOutputGroups.push({
@@ -532,9 +534,9 @@ export class MediaStack extends cdk.Stack {
       description: 'Copy to console or: aws medialive describe-input --input-id <id> to find RTMP URL(s)'
     });
 
-    if (nginxRtmpUrl) {
+    if (nginxRtmpBaseUrl) {
       new cdk.CfnOutput(this, 'NginxRtmpTapUrl', {
-        value: nginxRtmpUrl,
+        value: `${nginxRtmpBaseUrl}/${nginxRtmpStreamName}`,
         description: 'nginx-rtmp relay URL that MediaLive pushes to — use this as rtmpUrl when starting a caption session'
       });
     }

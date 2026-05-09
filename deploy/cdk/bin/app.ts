@@ -3,6 +3,7 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { LiveCaptionStack } from '../lib/live-caption-stack';
 import { MediaStack } from '../lib/media-stack';
+import { NginxRtmpStack } from '../lib/nginx-rtmp-stack';
 
 const app = new cdk.App();
 
@@ -20,7 +21,16 @@ const dubbingPollyEnabled = (app.node.tryGetContext('dubbingPollyEnabled') ?? 'f
 const vpcId              = app.node.tryGetContext('vpcId')            as string | undefined;
 const repositoryName     = app.node.tryGetContext('repositoryName')   as string | undefined;
 
-// ── Stack 1: MediaLive + MediaPackage V2 + CloudFront ─────────────────────────
+// ── Stack 1: nginx-rtmp relay EC2 (MediaLive tap → caption engine) ────────────
+const nginxRtmpStack = new NginxRtmpStack(app, 'LiveCaptionNginxRtmp', {
+  env,
+  streamName:   'primary',
+  instanceType: 't3.micro',
+  description: 'Live caption engine — nginx-rtmp relay EC2',
+  tags: { Project: 'live-caption-engine', ManagedBy: 'CDK' }
+});
+
+// ── Stack 2: MediaLive + MediaPackage V2 ──────────────────────────────────────
 const mediaStack = new MediaStack(app, 'LiveCaptionMedia', {
   env,
   channelClass,
@@ -29,11 +39,13 @@ const mediaStack = new MediaStack(app, 'LiveCaptionMedia', {
   startoverWindowSeconds: 7200,
   // Restrict to your encoder's IP in production, e.g. ['203.0.113.10/32']
   rtmpAllowedCidrs: ['0.0.0.0/0'],
+  // Wire the nginx-rtmp relay — MediaLive will push RTMP here for the caption tap.
+  nginxRtmpBaseUrl:    nginxRtmpStack.rtmpBaseUrl,
+  nginxRtmpStreamName: nginxRtmpStack.streamName,
   description: 'Live caption engine — MediaLive + MediaPackage V2 + CloudFront',
-  tags: { Project: 'live-caption-engine', ManagedBy: 'CDK' },
-  nginxRtmpUrl: 'rtmp://3.122.10.136:1935/live/primary'
-  // nginxRtmpUrl: 'rtmp://<your-nginx-host>:1935/<app>/<stream>'  // Set when you have an nginx-rtmp relay for the caption engine audio tap.
+  tags: { Project: 'live-caption-engine', ManagedBy: 'CDK' }
 });
+mediaStack.addDependency(nginxRtmpStack);
 
 // ── Stack 2: ECS Fargate + ALB (live-caption-engine) ─────────────────────────
 // The MediaPackage ingest URL is wired from mediaStack as a cross-stack reference.
