@@ -86,6 +86,12 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
    * The lifecycle rule and imageScanOnPush settings are not applied to imported repositories.
    */
   repositoryName?: string;
+
+  /**
+   * Default RTMP input URL the service should pull from when a session does
+   * not provide one explicitly.
+   */
+  defaultRtmpUrl?: string;
 }
 
 export class LiveCaptionStack extends cdk.Stack {
@@ -253,6 +259,7 @@ export class LiveCaptionStack extends cdk.Stack {
       environment: {
         NODE_ENV:                'production',
         ENGINE:                  engine,
+        ...(props.defaultRtmpUrl ? { RTMP_URL: props.defaultRtmpUrl } : {}),
         PORT:                    '8080',
         LOG_LEVEL:               'info',
         AUDIO_SAMPLE_RATE:       '16000',

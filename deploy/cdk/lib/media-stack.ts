@@ -77,6 +77,9 @@ export class MediaStack extends cdk.Stack {
    */
   public readonly mediaPackageIngestUrl: string;
 
+  /** nginx-rtmp tap URL (when nginx tap output is enabled). */
+  public readonly nginxRtmpTapUrl?: string;
+
   /** CloudFront distribution HTTPS root URL. */
   // public readonly playbackUrl: string;
 
@@ -208,6 +211,7 @@ export class MediaStack extends cdk.Stack {
 
     const nginxRtmpBaseUrl    = props.nginxRtmpBaseUrl;
     const nginxRtmpStreamName = props.nginxRtmpStreamName ?? 'primary';
+    this.nginxRtmpTapUrl = nginxRtmpBaseUrl ? `${nginxRtmpBaseUrl}/${nginxRtmpStreamName}` : undefined;
 
     // ── MediaLive destinations ─────────────────────────────────────────────────
     // 'mp2'        → MediaPackage V2 ingest (always present).
@@ -536,7 +540,7 @@ export class MediaStack extends cdk.Stack {
 
     if (nginxRtmpBaseUrl) {
       new cdk.CfnOutput(this, 'NginxRtmpTapUrl', {
-        value: `${nginxRtmpBaseUrl}/${nginxRtmpStreamName}`,
+        value: this.nginxRtmpTapUrl!,
         description: 'nginx-rtmp relay URL that MediaLive pushes to — use this as rtmpUrl when starting a caption session'
       });
     }

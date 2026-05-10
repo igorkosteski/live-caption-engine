@@ -52,6 +52,7 @@ mediaStack.addDependency(nginxRtmpStack);
 const liveCaptionStack = new LiveCaptionStack(app, 'LiveCaptionEngine', {
   env,
   engine,
+  defaultRtmpUrl: mediaStack.nginxRtmpTapUrl,
   // MediaPackage is always enabled — ingest URL comes from MediaStack.
   mediapackageEnabled:  true,
   mediapackageIngestUrl: mediaStack.mediaPackageIngestUrl,

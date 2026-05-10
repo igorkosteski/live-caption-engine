@@ -274,14 +274,15 @@ async function main() {
 
   /**
    * POST /sessions
-   * Body: { rtmpUrl: string, languages?: string[], dubbingLanguages?: string[] }
+   * Body: { rtmpUrl?: string, languages?: string[], dubbingLanguages?: string[] }
    * Response 201: { ok: true, sessionId, endpoints }
    */
   app.post('/sessions', async (req, res) => {
     const { rtmpUrl, languages = [], dubbingLanguages = [] } = req.body || {};
+    const sessionRtmpUrl = rtmpUrl || config.stream.rtmpUrl;
 
-    if (!rtmpUrl || typeof rtmpUrl !== 'string') {
-      return res.status(400).json({ ok: false, message: 'rtmpUrl is required' });
+    if (!sessionRtmpUrl || typeof sessionRtmpUrl !== 'string') {
+      return res.status(400).json({ ok: false, message: 'rtmpUrl is required (request body or RTMP_URL env)' });
     }
     if (!Array.isArray(languages) || !Array.isArray(dubbingLanguages)) {
       return res.status(400).json({ ok: false, message: 'languages and dubbingLanguages must be arrays' });
@@ -289,7 +290,7 @@ async function main() {
 
     try {
       const sessionId = randomUUID();
-      const session = await startSession({ sessionId, rtmpUrl, languages, dubbingLanguages });
+      const session = await startSession({ sessionId, rtmpUrl: sessionRtmpUrl, languages, dubbingLanguages });
       sessions.set(sessionId, session);
       res.status(201).json({ ok: true, sessionId, endpoints: session.endpoints });
     } catch (err) {
