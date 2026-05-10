@@ -37,8 +37,6 @@ const mediaStack = new MediaStack(app, 'LiveCaptionMedia', {
   segmentDurationSeconds: 6,
   manifestWindowSeconds:  60,
   startoverWindowSeconds: 7200,
-  // Restrict to your encoder's IP in production, e.g. ['203.0.113.10/32']
-  rtmpAllowedCidrs: ['0.0.0.0/0'],
   // Wire the nginx-rtmp relay — MediaLive will push RTMP here for the caption tap.
   nginxRtmpBaseUrl:    nginxRtmpStack.rtmpBaseUrl,
   nginxRtmpStreamName: nginxRtmpStack.streamName,

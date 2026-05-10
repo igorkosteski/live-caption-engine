@@ -8,7 +8,8 @@ import { Construct } from 'constructs';
 
 export interface MediaStackProps extends cdk.StackProps {
   /**
-   * RTMP stream name the encoder pushes to MediaLive, e.g. 'live/primary'.
+  * Deprecated for pull-mode input.
+  * Kept only for backward compatibility.
    * @default 'live/primary'
    */
   rtmpStreamName?: string;
@@ -39,26 +40,17 @@ export interface MediaStackProps extends cdk.StackProps {
   channelClass?: 'STANDARD' | 'SINGLE_PIPELINE';
 
   /**
-   * Source CIDR ranges allowed to push RTMP to MediaLive.
-   * Restrict to your encoder IPs in production.
-   * @default ['0.0.0.0/0']
-   */
-  rtmpAllowedCidrs?: string[];
-
-  /**
    * Base RTMP URL of the nginx-rtmp relay, WITHOUT the stream name.
    * e.g. `rtmp://<host>:1935/live`
    *
-   * When provided together with nginxRtmpStreamName, MediaLive adds a second
-   * RTMP output group that pushes the live stream to the relay so the
-   * live-caption-engine can pull it at low latency instead of going via HLS.
+    * MediaLive pulls the input stream from this relay.
    *
-   * @default undefined — RTMP tap output group is not created
+    * @default undefined
    */
   nginxRtmpBaseUrl?: string;
 
   /**
-   * Stream name MediaLive pushes to the nginx-rtmp relay.
+    * Stream name MediaLive pulls from on the nginx-rtmp relay.
    * e.g. `primary`  →  full URL becomes `<nginxRtmpBaseUrl>/primary`
    *
    * For STANDARD channel class a second-pipeline stream `<name>-b` is
@@ -77,7 +69,7 @@ export class MediaStack extends cdk.Stack {
    */
   public readonly mediaPackageIngestUrl: string;
 
-  /** nginx-rtmp tap URL (when nginx tap output is enabled). */
+  /** nginx-rtmp input URL used by MediaLive RTMP_PULL input. */
   public readonly nginxRtmpTapUrl?: string;
 
   /** CloudFront distribution HTTPS root URL. */
@@ -89,12 +81,12 @@ export class MediaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: MediaStackProps = {}) {
     super(scope, id, props);
 
-    const rtmpStreamName         = props.rtmpStreamName         ?? 'live/primary';
     const segmentDurationSeconds = props.segmentDurationSeconds ?? 6;
     const manifestWindowSeconds  = props.manifestWindowSeconds  ?? 60;
     const startoverWindowSeconds = props.startoverWindowSeconds ?? 7200;
     const channelClass           = props.channelClass           ?? 'SINGLE_PIPELINE';
-    const rtmpAllowedCidrs       = props.rtmpAllowedCidrs       ?? ['0.0.0.0/0'];
+    const nginxRtmpBaseUrl       = props.nginxRtmpBaseUrl;
+    const nginxRtmpStreamName    = props.nginxRtmpStreamName ?? 'primary';
 
     const GROUP_NAME    = 'live-caption';
     const CHANNEL_NAME  = 'main';
@@ -182,23 +174,22 @@ export class MediaStack extends cdk.Stack {
     });
     channelPolicy.addDependency(mpChannel);
 
-    // ── MediaLive input security group ─────────────────────────────────────────
+    if (!nginxRtmpBaseUrl) {
+      throw new Error('nginxRtmpBaseUrl is required for RTMP_PULL MediaLive input');
+    }
 
-    const inputSg = new medialive.CfnInputSecurityGroup(this, 'InputSg', {
-      whitelistRules: rtmpAllowedCidrs.map(cidr => ({ cidr }))
-    });
-
-    // RTMP_PUSH: one destination per pipeline (SINGLE=1, STANDARD=2).
-    const numPipelines   = channelClass === 'STANDARD' ? 2 : 1;
-    const rtmpDestinations = Array.from({ length: numPipelines }, (_, i) => ({
-      streamName: i === 0 ? rtmpStreamName : `${rtmpStreamName}-b`
-    }));
+    // RTMP_PULL: one source URL per pipeline (SINGLE=1, STANDARD=2).
+    const numPipelines = channelClass === 'STANDARD' ? 2 : 1;
+    const rtmpSourceUrls = Array.from({ length: numPipelines }, (_, i) =>
+      `${nginxRtmpBaseUrl}/${i === 0 ? nginxRtmpStreamName : `${nginxRtmpStreamName}-b`}`
+    );
 
     const rtmpInput = new medialive.CfnInput(this, 'RtmpInput', {
       name: 'live-caption-rtmp',
-      type: 'RTMP_PUSH',
-      inputSecurityGroups: [inputSg.ref],
-      destinations: rtmpDestinations
+      type: 'RTMP_PULL',
+      sources: rtmpSourceUrls.map((url) => ({
+        url
+      }))
     });
 
     // ── MediaLive channel ──────────────────────────────────────────────────────
@@ -209,13 +200,10 @@ export class MediaStack extends cdk.Stack {
     const mp2Url0 = cdk.Fn.select(0, mp2Urls);
     const mp2Url1 = channelClass === 'STANDARD' ? cdk.Fn.select(1, mp2Urls) : mp2Url0;
 
-    const nginxRtmpBaseUrl    = props.nginxRtmpBaseUrl;
-    const nginxRtmpStreamName = props.nginxRtmpStreamName ?? 'primary';
     this.nginxRtmpTapUrl = nginxRtmpBaseUrl ? `${nginxRtmpBaseUrl}/${nginxRtmpStreamName}` : undefined;
 
     // ── MediaLive destinations ─────────────────────────────────────────────────
-    // 'mp2'        → MediaPackage V2 ingest (always present).
-    // 'nginx-rtmp' → nginx relay for caption-engine audio tap (optional).
+    // 'mp2' → MediaPackage V2 ingest.
     const mlDestinations: medialive.CfnChannel.OutputDestinationProperty[] = [{
       id: 'mp2',
       settings: [
@@ -224,20 +212,8 @@ export class MediaStack extends cdk.Stack {
       ]
     }];
 
-    if (nginxRtmpBaseUrl) {
-      const nginxStreamNameB = `${nginxRtmpStreamName}-b`;
-      mlDestinations.push({
-        id: 'nginx-rtmp',
-        settings: [
-          { url: nginxRtmpBaseUrl, streamName: nginxRtmpStreamName },
-          ...(channelClass === 'STANDARD' ? [{ url: nginxRtmpBaseUrl, streamName: nginxStreamNameB }] : [])
-        ]
-      });
-    }
-
     // ── MediaLive output groups ────────────────────────────────────────────────
-    // Group 1 (always): HLS → MediaPackage V2  (broadcast video + audio).
-    // Group 2 (optional): RTMP → nginx-rtmp relay (caption-engine audio tap).
+    // Group 1: HLS → MediaPackage V2 (broadcast video + audio).
     const mlOutputGroups: medialive.CfnChannel.OutputGroupProperty[] = [{
       name: 'MediaPackageV2',
       outputGroupSettings: {
@@ -293,34 +269,6 @@ export class MediaStack extends cdk.Stack {
         }
       }]
     }];
-
-    if (nginxRtmpBaseUrl) {
-      // RTMP tap: push the same video+audio to the nginx-rtmp relay so the
-      // caption engine can connect at low latency without going through HLS.
-      mlOutputGroups.push({
-        name: 'NginxRtmpTap',
-        outputGroupSettings: {
-          rtmpGroupSettings: {
-            authenticationScheme: 'COMMON',
-            cacheLength: 30,
-            cacheFullBehavior: 'DISCONNECT_IMMEDIATELY',
-            restartDelay: 15
-          }
-        },
-        outputs: [{
-          outputName: 'rtmp_tap',
-          videoDescriptionName: 'video_720p',
-          audioDescriptionNames: ['audio_aac'],
-          outputSettings: {
-            rtmpOutputSettings: {
-              destination: { destinationRefId: 'nginx-rtmp' },
-              connectionRetryInterval: 5,
-              numRetries: 10
-            }
-          }
-        }]
-      });
-    }
 
     const mlChannel = new medialive.CfnChannel(this, 'MlChannel', {
       name: 'live-caption-channel',
@@ -407,7 +355,7 @@ export class MediaStack extends cdk.Stack {
             }
           }
         }],
-        // ── Output groups (built above; includes nginx-rtmp tap when configured) ──
+        // ── Output groups (MediaPackage V2) ──
         outputGroups: mlOutputGroups,
         // ── Global ─────────────────────────────────────────────────────────────
         timecodeConfig: { source: 'EMBEDDED' },
@@ -530,7 +478,7 @@ export class MediaStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'MediaLiveInputId', {
       value: rtmpInput.ref,
-      description: 'MediaLive input ID — describe to get the RTMP push URL(s)'
+      description: 'MediaLive input ID (RTMP_PULL from nginx-rtmp relay)'
     });
 
     new cdk.CfnOutput(this, 'MediaLiveInputArn', {
@@ -541,7 +489,7 @@ export class MediaStack extends cdk.Stack {
     if (nginxRtmpBaseUrl) {
       new cdk.CfnOutput(this, 'NginxRtmpTapUrl', {
         value: this.nginxRtmpTapUrl!,
-        description: 'nginx-rtmp relay URL that MediaLive pushes to — use this as rtmpUrl when starting a caption session'
+        description: 'nginx-rtmp relay URL that MediaLive pulls from'
       });
     }
 
