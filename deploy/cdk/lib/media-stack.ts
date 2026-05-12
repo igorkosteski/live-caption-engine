@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as medialive from 'aws-cdk-lib/aws-medialive';
 import * as mediapackagev2 from 'aws-cdk-lib/aws-mediapackagev2';
 import { Construct } from 'constructs';
@@ -192,6 +193,14 @@ export class MediaStack extends cdk.Stack {
       }))
     });
 
+    // ── CloudWatch Logs for MediaLive ─────────────────────────────────────────
+
+    const mlLogGroup = new logs.LogGroup(this, 'MediaLiveLogGroup', {
+      logGroupName: '/aws/medialive/live-caption-channel',
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
     // ── MediaLive channel ──────────────────────────────────────────────────────
     // Sends HLS to MediaPackage V2 via SigV4-signed PUT (hlsBasicPutSettings).
 
@@ -274,6 +283,7 @@ export class MediaStack extends cdk.Stack {
       name: 'live-caption-channel',
       channelClass,
       roleArn: mediaLiveRole.roleArn,
+      logLevel: 'INFO',
       inputSpecification: {
         codec: 'AVC',
         maximumBitrate: 'MAX_20_MBPS',
