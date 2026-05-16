@@ -128,6 +128,24 @@ export class MediaStack extends cdk.Stack {
       startoverWindowSeconds
     });
     originEndpoint.addDependency(mpChannel);
+    
+    const originEndpointPolicy = new mediapackagev2.CfnOriginEndpointPolicy(this, 'OriginEndpointPolicy', {
+      channelGroupName: GROUP_NAME,
+      channelName: CHANNEL_NAME,
+      originEndpointName: ENDPOINT_NAME,
+      policy: {
+        Statement: [{
+          Sid: 'AllowAnonymousGetObject',
+          Effect: 'Allow',
+          Principal: {
+            AWS: '*'
+          },
+          Action: 'mediapackagev2:GetObject',
+          Resource: originEndpoint.attrArn
+        }]
+      }
+    });
+    originEndpointPolicy.addDependency(originEndpoint);
 
     // ── IAM role for MediaLive ─────────────────────────────────────────────────
 
