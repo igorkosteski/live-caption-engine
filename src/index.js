@@ -115,6 +115,20 @@ async function main() {
         throw new Error('MEDIAPACKAGE_INGEST_URL is required when MEDIAPACKAGE_ENABLED=true');
       }
 
+      if (config.mediapackage.enabled) {
+        // Always publish source-language captions so MediaPackage has a baseline subtitle track
+        // even when translation output is disabled or temporarily empty.
+        const sourcePublisher = new MediaPackagePublisher({
+          logger,
+          captions,
+          ingestUrl: config.mediapackage.ingestUrl,
+          awsRegion: config.mediapackage.awsRegion,
+          subtitlePath: `${config.mediapackage.subtitlePath}-${sessionId}`
+        });
+        sourcePublisher.start();
+        publishers.push(sourcePublisher);
+      }
+
       if (enableTranslation) {
         for (const lang of translationLanguages) {
           const safeLang = lang.replace(/[^a-zA-Z0-9-]/g, '');
