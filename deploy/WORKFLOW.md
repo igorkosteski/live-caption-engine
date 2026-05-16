@@ -156,3 +156,13 @@ aws medialive stop-channel --channel-id <MediaLiveChannelId>
 - MediaLiveInputId is now useful for operational inspection, not for obtaining encoder push URLs.
 - The encoder should push to nginx-rtmp, not directly to MediaLive.
 - No second MediaLive RTMP output destination is configured anymore.
+
+## 6. Manifest merging and captions
+
+- MediaLive sends video/audio (HLS) to MediaPackage V2 ingest endpoint.
+- live-caption-engine uploads WebVTT caption segments and a subtitle playlist (subs.m3u8) to the same MediaPackage V2 endpoint under the /subtitles/ path.
+- MediaPackage V2 OriginEndpoint is now configured (via CDK) to include a WebVTT subtitle group in the HLS manifest.
+- Viewers receive a single HLS manifest from MediaPackage/CloudFront that references both the video/audio and the captions.
+- No external manifest merging is required; MediaPackage handles this automatically.
+
+**If you change subtitle languages or add more tracks, update the CDK configuration accordingly.**
