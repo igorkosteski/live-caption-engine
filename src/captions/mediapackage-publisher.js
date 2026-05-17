@@ -42,6 +42,9 @@ class MediaPackagePublisher {
     this.subtitlePath = subtitlePath;
     this.publishedSegments = new Set();
     this.pushTimer = null;
+    this.successfulPuts = 0;
+    this.failedPuts = 0;
+    this.lastSuccessLogAt = 0;
 
     this.signer = new SignatureV4({
       credentials: fromNodeProviderChain(),
@@ -60,7 +63,7 @@ class MediaPackagePublisher {
     }, intervalMs);
 
     this.logger.info(
-      { ingestUrl: this.ingestUrl, intervalMs },
+      { ingestUrl: this.ingestUrl, subtitlePath: this.subtitlePath, intervalMs },
       'MediaPackage publisher started'
     );
   }
@@ -173,13 +176,38 @@ class MediaPackagePublisher {
           });
           res.on('end', () => {
             if (res.statusCode >= 200 && res.statusCode < 300) {
-              this.logger.debug(
-                { path, statusCode: res.statusCode },
-                'Pushed caption to MediaPackage'
-              );
+              this.successfulPuts += 1;
+
+              const now = Date.now();
+              const shouldLogSuccess =
+                this.successfulPuts === 1 ||
+                path.endsWith('/subs.m3u8') ||
+                now - this.lastSuccessLogAt >= 30000;
+
+              if (shouldLogSuccess) {
+                this.lastSuccessLogAt = now;
+                this.logger.info(
+                  {
+                    path,
+                    statusCode: res.statusCode,
+                    successfulPuts: this.successfulPuts,
+                    failedPuts: this.failedPuts,
+                    subtitlePath: this.subtitlePath
+                  },
+                  'MediaPackage PUT succeeded'
+                );
+              }
             } else {
+              this.failedPuts += 1;
               this.logger.error(
-                { path, statusCode: res.statusCode, body: responseBody.slice(0, 300) },
+                {
+                  path,
+                  statusCode: res.statusCode,
+                  body: responseBody.slice(0, 300),
+                  successfulPuts: this.successfulPuts,
+                  failedPuts: this.failedPuts,
+                  subtitlePath: this.subtitlePath
+                },
                 'MediaPackage PUT failed'
               );
             }
@@ -189,7 +217,17 @@ class MediaPackagePublisher {
       );
 
       req.on('error', (err) => {
-        this.logger.error({ err, path }, 'MediaPackage PUT network error');
+        this.failedPuts += 1;
+        this.logger.error(
+          {
+            err,
+            path,
+            successfulPuts: this.successfulPuts,
+            failedPuts: this.failedPuts,
+            subtitlePath: this.subtitlePath
+          },
+          'MediaPackage PUT network error'
+        );
         resolve();
       });
 

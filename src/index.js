@@ -127,6 +127,15 @@ async function main() {
         });
         sourcePublisher.start();
         publishers.push(sourcePublisher);
+
+        logger.info(
+          {
+            sessionId,
+            subtitlePath: `${config.mediapackage.subtitlePath}-${sessionId}`,
+            ingestUrl: config.mediapackage.ingestUrl
+          },
+          'MediaPackage source captions publisher enabled'
+        );
       }
 
       if (enableTranslation) {
@@ -153,6 +162,16 @@ async function main() {
             });
             p.start();
             publishers.push(p);
+
+            logger.info(
+              {
+                sessionId,
+                language: lang,
+                subtitlePath: `${config.mediapackage.translationSubtitlePath}-${sessionId}-${safeLang}`,
+                ingestUrl: config.mediapackage.ingestUrl
+              },
+              'MediaPackage translated captions publisher enabled'
+            );
           }
         }
 
@@ -256,6 +275,15 @@ async function main() {
     };
 
     logger.info({ sessionId, rtmpUrl, languages: translationLanguages, dubbingLanguages: dubbingTargetLangs }, 'Session started');
+
+    logger.info(
+      {
+        sessionId,
+        mediapackageEnabled: config.mediapackage.enabled,
+        mediapackagePublisherCount: publishers.length
+      },
+      'Session publisher summary'
+    );
 
     // ── Teardown helper ──────────────────────────────────────────────────────
 

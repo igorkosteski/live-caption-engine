@@ -14,6 +14,9 @@ class SonioxEngine extends BaseEngine {
     this.partialText = '';
     this.audioChunksSent = 0;
     this.audioBytesSent = 0;
+    this.lastTranscriptionLogAt = 0;
+    this.sourceCaptionCount = 0;
+    this.translatedCaptionCount = 0;
   }
 
   async start() {
@@ -22,6 +25,9 @@ class SonioxEngine extends BaseEngine {
     this.partialText = '';
     this.audioChunksSent = 0;
     this.audioBytesSent = 0;
+    this.lastTranscriptionLogAt = 0;
+    this.sourceCaptionCount = 0;
+    this.translatedCaptionCount = 0;
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.sonioxConfig.wsUrl);
@@ -113,15 +119,32 @@ class SonioxEngine extends BaseEngine {
           this.partialText = nonFinalTokens;
 
           if (finalTokens || nonFinalTokens) {
-            this.logger.info(
+            const now = Date.now();
+            const shouldLogHeartbeat = finalTokens.length > 0 || now - this.lastTranscriptionLogAt >= 15000;
+
+            if (shouldLogHeartbeat) {
+              this.lastTranscriptionLogAt = now;
+              this.logger.info(
+                {
+                  finalTextChars: this.finalText.length,
+                  partialTextChars: this.partialText.length,
+                  sourceCaptionCount: this.sourceCaptionCount,
+                  translatedCaptionCount: this.translatedCaptionCount,
+                  totalAudioProcessedMs: message.total_audio_proc_ms,
+                  finalAudioProcessedMs: message.final_audio_proc_ms
+                },
+                'Soniox transcription heartbeat'
+              );
+            }
+
+            this.logger.debug(
               {
-                final: this.finalText,
-                partial: this.partialText,
-                totalAudioProcessedMs: message.total_audio_proc_ms,
-                finalAudioProcessedMs: message.final_audio_proc_ms
+                finalDeltaChars: finalTokens.length,
+                partialChars: nonFinalTokens.length
               },
-              'Transcription update'
+              'Soniox transcription token update'
             );
+
           }
 
           // Translated tokens arrive alongside source tokens in message.translations.
@@ -138,7 +161,14 @@ class SonioxEngine extends BaseEngine {
         }
 
         if (message.finished) {
-          this.logger.info({ transcript: this.finalText.trim() }, 'Soniox stream finished');
+          this.logger.info(
+            {
+              finalTextChars: this.finalText.trim().length,
+              sourceCaptionCount: this.sourceCaptionCount,
+              translatedCaptionCount: this.translatedCaptionCount
+            },
+            'Soniox stream finished'
+          );
         }
       });
 
@@ -209,6 +239,12 @@ class SonioxEngine extends BaseEngine {
     }
 
     const eventName = language ? 'final-caption-translated' : 'final-caption';
+
+    if (language) {
+      this.translatedCaptionCount += 1;
+    } else {
+      this.sourceCaptionCount += 1;
+    }
 
     // When diarization is enabled, emit one cue per speaker run so each cue
     // carries a <v SpeakerN>...</v> WebVTT voice span.  Translated tokens
