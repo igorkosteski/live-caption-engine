@@ -11,10 +11,8 @@ const { buildConfig } = require('./config');
 const { createEngine } = require('./engines');
 const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
-const MediaPackagePublisher = require('./captions/mediapackage-publisher');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
 const PollyDubbingEngine = require('./engines/polly-dubbing-engine');
-const AudioSegmentPublisher = require('./dubbing/audio-segment-publisher');
 
 function warnOnUnreachableRtmpHost(rtmpUrl) {
   let parsedUrl;
@@ -90,7 +88,7 @@ async function main() {
 
     // ── Captions ────────────────────────────────────────────────────────────
 
-    const captionsActive = config.captions.enabled || config.mediapackage.enabled;
+    const captionsActive = config.captions.enabled;
     const captionsBasePath = `/sessions/${sessionId}/captions`;
 
     const captions = captionsActive
@@ -102,41 +100,11 @@ async function main() {
         })
       : null;
 
-    /** @type {MediaPackagePublisher[]} */
-    const publishers = [];
-
     /** @type {Map<string, LiveWebVtt>} */
     const translatedCaptionsByLang = new Map();
 
     if (captions) {
       engine.on('final-caption', (cue) => captions.addCue(cue));
-
-      if (config.mediapackage.enabled && !config.mediapackage.ingestUrl) {
-        throw new Error('MEDIAPACKAGE_INGEST_URL is required when MEDIAPACKAGE_ENABLED=true');
-      }
-
-      if (config.mediapackage.enabled) {
-        // Always publish source-language captions so MediaPackage has a baseline subtitle track
-        // even when translation output is disabled or temporarily empty.
-        const sourcePublisher = new MediaPackagePublisher({
-          logger,
-          captions,
-          ingestUrl: config.mediapackage.ingestUrl,
-          awsRegion: config.mediapackage.awsRegion,
-          subtitlePath: `${config.mediapackage.subtitlePath}-${sessionId}`
-        });
-        sourcePublisher.start();
-        publishers.push(sourcePublisher);
-
-        logger.info(
-          {
-            sessionId,
-            subtitlePath: `${config.mediapackage.subtitlePath}-${sessionId}`,
-            ingestUrl: config.mediapackage.ingestUrl
-          },
-          'MediaPackage source captions publisher enabled'
-        );
-      }
 
       if (enableTranslation) {
         for (const lang of translationLanguages) {
@@ -150,29 +118,6 @@ async function main() {
           });
 
           translatedCaptionsByLang.set(lang, translatedCaptions);
-
-          if (config.mediapackage.enabled) {
-            // Include sessionId in subtitle path so parallel sessions don't collide in MediaPackage.
-            const p = new MediaPackagePublisher({
-              logger,
-              captions: translatedCaptions,
-              ingestUrl: config.mediapackage.ingestUrl,
-              awsRegion: config.mediapackage.awsRegion,
-              subtitlePath: `${config.mediapackage.translationSubtitlePath}-${sessionId}-${safeLang}`
-            });
-            p.start();
-            publishers.push(p);
-
-            logger.info(
-              {
-                sessionId,
-                language: lang,
-                subtitlePath: `${config.mediapackage.translationSubtitlePath}-${sessionId}-${safeLang}`,
-                ingestUrl: config.mediapackage.ingestUrl
-              },
-              'MediaPackage translated captions publisher enabled'
-            );
-          }
         }
 
         engine.on('final-caption-translated', (cue) => {
@@ -188,7 +133,7 @@ async function main() {
       ? dubbingLanguages
       : (config.dubbing.enabled ? config.dubbing.targetLanguages : []);
 
-    /** @type {Array<{engine: object, audioPublisher: object|null, lang: string, safeLang: string}>} */
+    /** @type {Array<{engine: object, lang: string, safeLang: string}>} */
     const dubbingEngines = [];
 
     for (const lang of dubbingTargetLangs) {
@@ -212,25 +157,12 @@ async function main() {
         await dubbingEngine.start();
         streamSession.on('audio', (chunk) => dubbingEngine.sendAudio(chunk));
 
-        const audioPublisher = config.mediapackage.enabled
-          ? new AudioSegmentPublisher({
-              logger,
-              dubbingStream: dubbingEngine.dubbingStream,
-              ingestUrl: config.mediapackage.ingestUrl,
-              awsRegion: config.mediapackage.awsRegion,
-              audioPath: `${config.dubbing.audioPath}-${sessionId}-${safeLang}`,
-              segmentDurationMs: config.captions.segmentDurationMs,
-              windowSegments: config.captions.windowSegments
-            })
-          : null;
-
-        audioPublisher?.start();
-        dubbingEngines.push({ engine: dubbingEngine, audioPublisher, lang, safeLang });
+        dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
       } else if (config.dubbing.engine === 'polly') {
         const dubbingEngine = new PollyDubbingEngine({
           logger,
-          awsRegion: config.mediapackage.awsRegion,
+          awsRegion: config.dubbing.awsRegion,
           targetLanguage: lang,
           voiceId: config.dubbing.pollyVoices[lang] || undefined,
           engine
@@ -238,20 +170,7 @@ async function main() {
 
         dubbingEngine.start();
 
-        const audioPublisher = config.mediapackage.enabled
-          ? new AudioSegmentPublisher({
-              logger,
-              dubbingStream: dubbingEngine.dubbingStream,
-              ingestUrl: config.mediapackage.ingestUrl,
-              awsRegion: config.mediapackage.awsRegion,
-              audioPath: `${config.dubbing.audioPath}-${sessionId}-${safeLang}`,
-              segmentDurationMs: config.captions.segmentDurationMs,
-              windowSegments: config.captions.windowSegments
-            })
-          : null;
-
-        audioPublisher?.start();
-        dubbingEngines.push({ engine: dubbingEngine, audioPublisher, lang, safeLang });
+        dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
       } else {
         throw new Error(`Unknown DUBBING_ENGINE: ${config.dubbing.engine}. Use 'gemini' or 'polly'.`);
@@ -276,24 +195,11 @@ async function main() {
 
     logger.info({ sessionId, rtmpUrl, languages: translationLanguages, dubbingLanguages: dubbingTargetLangs }, 'Session started');
 
-    logger.info(
-      {
-        sessionId,
-        mediapackageEnabled: config.mediapackage.enabled,
-        mediapackagePublisherCount: publishers.length
-      },
-      'Session publisher summary'
-    );
-
     // ── Teardown helper ──────────────────────────────────────────────────────
 
     const stop = async () => {
-      for (const { engine: dubbingEngine, audioPublisher } of dubbingEngines) {
+      for (const { engine: dubbingEngine } of dubbingEngines) {
         try { await dubbingEngine.stop?.(); } catch { /* ignore */ }
-        try { audioPublisher?.stop(); } catch { /* ignore */ }
-      }
-      for (const p of publishers) {
-        try { p.stop(); } catch { /* ignore */ }
       }
       try { await streamSession.stop(); } catch { /* ignore */ }
     };
@@ -439,6 +345,61 @@ async function main() {
       { lang: entry.lang, sessionId: req.params.sessionId, remoteAddress: req.socket.remoteAddress },
       'Dubbing subscriber connected'
     );
+  });
+
+  // ── MediaPackage manifest proxy ───────────────────────────────────────────
+  //
+  // Fetches the MPv2 egress HLS master manifest and injects EXT-X-MEDIA subtitle
+  // entries pointing back at this app's caption endpoints.
+  //
+  // GET /sessions/:sessionId/manifest/master.m3u8
+
+  app.get('/sessions/:sessionId/manifest/master.m3u8', async (req, res) => {
+    if (!config.mediapackage.originUrl) {
+      return res.status(503).json({ ok: false, message: 'MEDIAPACKAGE_ORIGIN_URL not configured' });
+    }
+    const session = sessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ ok: false, message: 'Session not found' });
+
+    const masterUrl = `${config.mediapackage.originUrl}/index.m3u8`;
+    let upstreamText;
+    try {
+      const upstreamRes = await fetch(masterUrl);
+      if (!upstreamRes.ok) {
+        return res.status(502).json({ ok: false, message: `Upstream returned HTTP ${upstreamRes.status}` });
+      }
+      upstreamText = await upstreamRes.text();
+    } catch (err) {
+      logger.error({ err, masterUrl }, 'Manifest proxy: upstream fetch failed');
+      return res.status(502).json({ ok: false, message: 'Failed to fetch upstream manifest' });
+    }
+
+    // Build EXT-X-MEDIA entries for source + translated caption tracks.
+    const baseUrl = `${req.protocol}://${req.get('host')}/sessions/${req.params.sessionId}/captions`;
+    const subtitleLines = [];
+
+    if (session.captions) {
+      subtitleLines.push(
+        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="src",NAME="Source",DEFAULT=YES,AUTOSELECT=YES,URI="${baseUrl}/index.m3u8"`
+      );
+    }
+
+    for (const [lang, _track] of session.translatedCaptionsByLang) {
+      const safeLang = lang.replace(/[^a-zA-Z0-9-]/g, '');
+      subtitleLines.push(
+        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="${lang}",NAME="${lang}",DEFAULT=NO,AUTOSELECT=NO,URI="${baseUrl}/${safeLang}/index.m3u8"`
+      );
+    }
+
+    // Inject subtitle entries + SUBTITLES attribute into EXT-X-STREAM-INF lines.
+    let patched = upstreamText;
+    if (subtitleLines.length > 0) {
+      patched = patched
+        .replace(/^#EXT-X-STREAM-INF:(.+)$/gm, '#EXT-X-STREAM-INF:$1,SUBTITLES="subs"')
+        .replace(/^(#EXTM3U\s*)/, `$1${subtitleLines.join('\n')}\n`);
+    }
+
+    res.type('application/vnd.apple.mpegurl').send(patched);
   });
 
   // ── Health endpoints ──────────────────────────────────────────────────────

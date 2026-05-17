@@ -42,11 +42,10 @@ function buildConfig() {
       basePath: process.env.CAPTIONS_BASE_PATH || '/captions'
     },
     mediapackage: {
-      enabled: toBool(process.env.MEDIAPACKAGE_ENABLED, false),
-      ingestUrl: process.env.MEDIAPACKAGE_INGEST_URL || '',
-      awsRegion: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
-      subtitlePath: process.env.MEDIAPACKAGE_SUBTITLE_PATH || 'subtitles',
-      translationSubtitlePath: process.env.MEDIAPACKAGE_TRANSLATION_SUBTITLE_PATH || 'subtitles-translated'
+      // Base egress URL used by the manifest proxy to fetch and re-serve the MPv2 master manifest
+      // with EXT-X-MEDIA subtitle tracks injected. Leave empty to disable the proxy.
+      // e.g. https://<group>.egress.<id>.mediapackagev2.<region>.amazonaws.com/out/v1/<group>/<ch>/<ep>
+      originUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, '')
     },
     dubbing: {
       enabled: toBool(process.env.DUBBING_ENABLED, false),
@@ -65,6 +64,8 @@ function buildConfig() {
       geminiApiKey: process.env.GEMINI_API_KEY || '',
       geminiModel: process.env.GEMINI_DUBBING_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash-live-001',
       geminiSourceLanguage: process.env.TRANSLATION_SOURCE_LANGUAGE || '',
+      // AWS region for Polly TTS synthesis.
+      awsRegion: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
       // Polly-specific: comma-separated overrides e.g. "en:Matthew,de:Hans"
       pollyVoices: Object.fromEntries(
         (process.env.POLLY_VOICES || '')

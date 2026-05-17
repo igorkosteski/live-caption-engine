@@ -46,14 +46,12 @@ const mediaStack = new MediaStack(app, 'LiveCaptionMedia', {
 mediaStack.addDependency(nginxRtmpStack);
 
 // ── Stack 2: ECS Fargate + ALB (live-caption-engine) ─────────────────────────
-// The MediaPackage ingest URL is wired from mediaStack as a cross-stack reference.
 const liveCaptionStack = new LiveCaptionStack(app, 'LiveCaptionEngine', {
   env,
   engine,
   defaultRtmpUrl: mediaStack.nginxRtmpTapUrl,
-  // MediaPackage is always enabled — ingest URL comes from MediaStack.
-  mediapackageEnabled:  true,
-  mediapackageIngestUrl: mediaStack.mediaPackageIngestUrl,
+  // Manifest proxy fetches the MPv2 egress master manifest and injects subtitle tracks.
+  mediapackageOriginUrl: mediaStack.mediaPackageOriginUrl,
   dubbingPollyEnabled,
   desiredCount:    1,
   minCapacity:     1,

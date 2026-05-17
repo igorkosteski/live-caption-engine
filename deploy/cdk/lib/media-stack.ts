@@ -64,11 +64,10 @@ export interface MediaStackProps extends cdk.StackProps {
 
 export class MediaStack extends cdk.Stack {
   /**
-   * MediaPackage V2 primary ingest URL.
-   * Pass this to LiveCaptionStack as `mediapackageIngestUrl` so the
-   * live-caption-engine can push VTT/AAC segments here.
+   * MediaPackage V2 egress origin base URL — used by the manifest proxy endpoint.
+   * Format: https://<group>.egress.<stageId>.mediapackagev2.<region>.amazonaws.com/out/v1/<group>/<channel>/<endpoint>
    */
-  public readonly mediaPackageIngestUrl: string;
+  public readonly mediaPackageOriginUrl: string;
 
   /** nginx-rtmp input URL used by MediaLive RTMP_PULL input. */
   public readonly nginxRtmpTapUrl?: string;
@@ -483,7 +482,15 @@ export class MediaStack extends cdk.Stack {
     // ── Expose values for cross-stack references ───────────────────────────────
 
     // Primary ingest URL — the live-caption-engine PUTs VTT/AAC segments here.
-    this.mediaPackageIngestUrl = cdk.Fn.select(0, mpChannel.attrIngestEndpointUrls);
+    // Derive egress origin URL from the first ingest endpoint URL.
+    // Ingest format: https://<group>-1.ingest.<stageId>.mediapackagev2.<region>.amazonaws.com/in/v1/...
+    const ingestUrl0 = cdk.Fn.select(0, mpChannel.attrIngestEndpointUrls);
+    const stageId = cdk.Fn.select(0, cdk.Fn.split('.mediapackagev2.', cdk.Fn.select(1, cdk.Fn.split('.ingest.', ingestUrl0))));
+    this.mediaPackageOriginUrl = cdk.Fn.join('', [
+      `https://${GROUP_NAME}.egress.`, stageId,
+      `.mediapackagev2.`, this.region,
+      `.amazonaws.com/out/v1/${GROUP_NAME}/${CHANNEL_NAME}/${ENDPOINT_NAME}`
+    ]);
 
     // this.playbackUrl   = `https://${cfnDist.attrDomainName}`;
     // this.hlsPlaylistUrl = `https://${cfnDist.attrDomainName}/${MANIFEST_NAME}/index.m3u8`;
@@ -495,9 +502,9 @@ export class MediaStack extends cdk.Stack {
     //   description: 'HLS master playlist URL — paste into VLC, Quicktime, or an HLS.js player'
     // });
 
-    new cdk.CfnOutput(this, 'MediaPackageIngestUrl', {
-      value: this.mediaPackageIngestUrl,
-      description: 'MediaPackage V2 primary ingest URL — used by live-caption-engine for VTT/AAC ingest'
+    new cdk.CfnOutput(this, 'MediaPackageOriginUrl', {
+      value: this.mediaPackageOriginUrl,
+      description: 'MediaPackage V2 egress origin base URL — used by the manifest proxy endpoint'
     });
 
     new cdk.CfnOutput(this, 'MediaLiveChannelId', {

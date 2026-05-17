@@ -17,16 +17,9 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
   engine?: 'soniox' | 'gemini';
 
   /**
-   * Enable MediaPackage V2 subtitle/audio ingest.
-   * @default false
+   * MediaPackage V2 egress origin base URL — used by the manifest proxy endpoint.
    */
-  mediapackageEnabled?: boolean;
-
-  /**
-   * MediaPackage V2 channel ingest URL (required when mediapackageEnabled=true).
-   * e.g. https://<group>.ingest.<region>.mediapackagev2.amazonaws.com/in/v1/<group>/<channel>/<ep>
-   */
-  mediapackageIngestUrl?: string;
+  mediapackageOriginUrl?: string;
 
   /**
    * Enable AWS Polly dubbing support (adds polly:SynthesizeSpeech to the task role).
@@ -115,7 +108,6 @@ export class LiveCaptionStack extends cdk.Stack {
     const memoryLimitMiB      = props.memoryLimitMiB      ?? 1024;
     const publicLoadBalancer  = props.publicLoadBalancer  ?? true;
     const ecrMaxImageCount    = props.ecrMaxImageCount    ?? 10;
-    const mediapackageEnabled = props.mediapackageEnabled ?? false;
     const dubbingPollyEnabled = props.dubbingPollyEnabled ?? false;
     const repositoryName      = props.repositoryName ?? 'live-caption-engine';
 
@@ -212,14 +204,6 @@ export class LiveCaptionStack extends cdk.Stack {
       }));
     }
 
-    if (mediapackageEnabled) {
-      taskRole.addToPolicy(new iam.PolicyStatement({
-        sid: 'MediaPackageV2Ingest',
-        actions: ['mediapackagev2:PutObject'],
-        resources: ['*']   // Tighten to your channel ARN in production.
-      }));
-    }
-
     // CloudWatch metrics / logs from the container (for custom metrics if added later).
     taskRole.addToPolicy(new iam.PolicyStatement({
       sid: 'CloudWatchLogs',
@@ -269,9 +253,8 @@ export class LiveCaptionStack extends cdk.Stack {
         CAPTIONS_ENABLED:        'true',
         CAPTIONS_SEGMENT_DURATION_MS: '6000',
         CAPTIONS_WINDOW_SEGMENTS: '5',
-        MEDIAPACKAGE_ENABLED:    mediapackageEnabled ? 'true' : 'false',
-        ...(mediapackageEnabled && props.mediapackageIngestUrl
-          ? { MEDIAPACKAGE_INGEST_URL: props.mediapackageIngestUrl }
+        ...(props.mediapackageOriginUrl
+          ? { MEDIAPACKAGE_ORIGIN_URL: props.mediapackageOriginUrl }
           : {}),
         AWS_REGION:              this.region
       },
