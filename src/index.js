@@ -190,7 +190,10 @@ async function main() {
       dub: dubbingEngines.map(({ lang, safeLang }) => ({
         lang,
         url: `/sessions/${sessionId}/dub/${safeLang}/audio.pcm`
-      }))
+      })),
+      manifest: config.mediapackage.originUrl
+        ? `/sessions/${sessionId}/manifest/master.m3u8`
+        : null
     };
 
     logger.info({ sessionId, rtmpUrl, languages: translationLanguages, dubbingLanguages: dubbingTargetLangs }, 'Session started');
