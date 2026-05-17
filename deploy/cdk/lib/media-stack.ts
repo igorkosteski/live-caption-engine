@@ -134,13 +134,14 @@ export class MediaStack extends cdk.Stack {
       channelName: CHANNEL_NAME,
       originEndpointName: ENDPOINT_NAME,
       policy: {
+        Version: '2012-10-17',
         Statement: [{
           Sid: 'AllowAnonymousGetObject',
           Effect: 'Allow',
           Principal: {
             AWS: '*'
           },
-          Action: 'mediapackagev2:GetObject',
+          Action: ['mediapackagev2:GetObject'],
           Resource: originEndpoint.attrArn
         }]
       }
