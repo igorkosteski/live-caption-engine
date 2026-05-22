@@ -3,6 +3,7 @@
 const { logger } = require('./helpers');
 const {
   buildLoopbackRtmpUrl,
+  buildSessionIdFromStreamPath,
   createAutoSessionManager,
   parseLanguageList,
   resolvePublishEvent
@@ -30,6 +31,16 @@ describe('rtmp-auto-session', () => {
   describe('buildLoopbackRtmpUrl', () => {
     test('builds an RTMP URL from the publish path', () => {
       expect(buildLoopbackRtmpUrl({ streamPath: '/live/primary', rtmpPort: 1935 })).toBe('rtmp://127.0.0.1:1935/live/primary');
+    });
+  });
+
+  describe('buildSessionIdFromStreamPath', () => {
+    test('creates a stable stream-key-like session id', () => {
+      expect(buildSessionIdFromStreamPath('/live/primary')).toBe('live-primary');
+    });
+
+    test('returns null for invalid stream paths', () => {
+      expect(buildSessionIdFromStreamPath('')).toBeNull();
     });
   });
 
@@ -87,6 +98,34 @@ describe('rtmp-auto-session', () => {
         source: 'rtmp-publish'
       });
       expect(manager.sessionIdByStreamPath.get('/live/primary')).toBe('session-1');
+    });
+
+    test('uses stream-path based session id when sessionId is not provided', async () => {
+      const sessions = new Map();
+      const startSession = jest.fn(async (params) => {
+        const session = { sessionId: params.sessionId, rtmpUrl: params.rtmpUrl };
+        sessions.set(params.sessionId, session);
+        return session;
+      });
+
+      const manager = createAutoSessionManager({
+        logger,
+        rtmpPort: 1935,
+        startSession,
+        getSession: (sessionId) => sessions.get(sessionId),
+        deleteSession: jest.fn(),
+        findExistingSession: () => null
+      });
+
+      await manager.handlePrePublish('pub-1', '/live/primary', {});
+
+      expect(startSession).toHaveBeenCalledWith({
+        sessionId: 'live-primary',
+        rtmpUrl: 'rtmp://127.0.0.1:1935/live/primary',
+        languages: [],
+        dubbingLanguages: [],
+        source: 'rtmp-publish'
+      });
     });
 
     test('starts an auto-managed session from a NodeMediaServer session object', async () => {

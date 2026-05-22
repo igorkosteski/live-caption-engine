@@ -38,6 +38,22 @@ function buildLoopbackRtmpUrl({ streamPath, rtmpPort }) {
   return `rtmp://127.0.0.1:${rtmpPort}${normalizedPath}`;
 }
 
+function buildSessionIdFromStreamPath(streamPath) {
+  const normalizedPath = normalizeStreamPath(streamPath);
+
+  if (!normalizedPath) {
+    return null;
+  }
+
+  const sessionId = normalizedPath
+    .replace(/^\/+/, '')
+    .replace(/[^a-zA-Z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return sessionId || null;
+}
+
 function resolvePublishEvent(idOrSession, streamPath, args = {}) {
   if (idOrSession && typeof idOrSession === 'object' && !Array.isArray(idOrSession)) {
     return {
@@ -99,7 +115,7 @@ function createAutoSessionManager({
 
     const sessionId = typeof publishArgs.sessionId === 'string' && publishArgs.sessionId.trim()
       ? publishArgs.sessionId.trim()
-      : randomUUID();
+      : (buildSessionIdFromStreamPath(streamPath) || randomUUID());
 
     const pendingEntry = {
       sessionId,
@@ -185,6 +201,7 @@ function createAutoSessionManager({
 
 module.exports = {
   buildLoopbackRtmpUrl,
+  buildSessionIdFromStreamPath,
   createAutoSessionManager,
   parseLanguageList,
   resolvePublishEvent
