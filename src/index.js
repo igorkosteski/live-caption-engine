@@ -11,6 +11,7 @@ const logger = require('./logger');
 const { buildConfig } = require('./config');
 const { createEngine } = require('./engines');
 const { patchMasterManifest } = require('./manifest-proxy');
+const { createAutoSessionManager } = require('./rtmp-auto-session');
 const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
@@ -68,8 +69,10 @@ async function main() {
    * @param {string[]} params.languages         Translation target language codes (e.g. ['de','fr'])
    * @param {string[]} params.dubbingLanguages  Dubbing target languages (defaults to languages)
    */
-  async function startSession({ sessionId, rtmpUrl, languages, dubbingLanguages }) {
-    warnOnUnreachableRtmpHost(rtmpUrl);
+  async function startSession({ sessionId, rtmpUrl, languages, dubbingLanguages, source = 'api', skipLoopbackWarning = false }) {
+    if (!skipLoopbackWarning) {
+      warnOnUnreachableRtmpHost(rtmpUrl);
+    }
 
     // Per-session stream config — API-provided rtmpUrl takes precedence.
     const streamConfig = { ...config.stream, rtmpUrl };
@@ -208,7 +211,7 @@ async function main() {
         : null
     };
 
-    logger.info({ sessionId, rtmpUrl, languages: translationLanguages, dubbingLanguages: dubbingTargetLangs }, 'Session started');
+    logger.info({ sessionId, source, rtmpUrl, languages: translationLanguages, dubbingLanguages: dubbingTargetLangs }, 'Session started');
 
     // ── Teardown helper ──────────────────────────────────────────────────────
 
@@ -221,6 +224,7 @@ async function main() {
 
     return {
       sessionId,
+      source,
       rtmpUrl,
       languages: translationLanguages,
       dubbingLanguages: dubbingTargetLangs,
@@ -231,6 +235,25 @@ async function main() {
       endpoints,
       stop
     };
+  }
+
+  async function createTrackedSession(params) {
+    const session = await startSession(params);
+    sessions.set(session.sessionId, session);
+    return session;
+  }
+
+  async function deleteTrackedSession(sessionId) {
+    const session = sessions.get(sessionId);
+
+    if (!session) {
+      return false;
+    }
+
+    await session.stop();
+    sessions.delete(sessionId);
+
+    return true;
   }
 
   // ── Session management endpoints ─────────────────────────────────────────
@@ -253,8 +276,7 @@ async function main() {
 
     try {
       const sessionId = randomUUID();
-      const session = await startSession({ sessionId, rtmpUrl: sessionRtmpUrl, languages, dubbingLanguages });
-      sessions.set(sessionId, session);
+      const session = await createTrackedSession({ sessionId, rtmpUrl: sessionRtmpUrl, languages, dubbingLanguages, source: 'api' });
       res.status(201).json({ ok: true, sessionId, endpoints: session.endpoints });
     } catch (err) {
       logger.error({ err }, 'Failed to start session');
@@ -267,8 +289,8 @@ async function main() {
    * Lists all active sessions.
    */
   app.get('/sessions', (_req, res) => {
-    const list = [...sessions.values()].map(({ sessionId, rtmpUrl, languages, dubbingLanguages, startedAt, endpoints }) => ({
-      sessionId, rtmpUrl, languages, dubbingLanguages, startedAt, endpoints
+    const list = [...sessions.values()].map(({ sessionId, source, rtmpUrl, languages, dubbingLanguages, startedAt, endpoints }) => ({
+      sessionId, source, rtmpUrl, languages, dubbingLanguages, startedAt, endpoints
     }));
     res.json({ ok: true, sessions: list });
   });
@@ -283,8 +305,7 @@ async function main() {
       return res.status(404).json({ ok: false, message: 'Session not found' });
     }
     try {
-      await session.stop();
-      sessions.delete(req.params.sessionId);
+      await deleteTrackedSession(req.params.sessionId);
       logger.info({ sessionId: req.params.sessionId }, 'Session stopped');
       res.json({ ok: true });
     } catch (err) {
@@ -451,6 +472,23 @@ async function main() {
   };
 
   const nms = new NodeMediaServer(nmsConfig);
+  const autoSessionManager = createAutoSessionManager({
+    logger,
+    rtmpPort: nmsConfig.rtmp.port,
+    startSession: (params) => createTrackedSession({ ...params, skipLoopbackWarning: true }),
+    getSession: (sessionId) => sessions.get(sessionId),
+    deleteSession: deleteTrackedSession,
+    findExistingSession: (rtmpUrl) => [...sessions.values()].find((session) => session.rtmpUrl === rtmpUrl) || null
+  });
+
+  nms.on('postPublish', (id, streamPath, args) => {
+    autoSessionManager.handlePrePublish(id, streamPath, args);
+  });
+
+  nms.on('donePublish', (id, streamPath, args) => {
+    autoSessionManager.handleDonePublish(id, streamPath, args);
+  });
+
   nms.run();
 
   logger.info({ port: nmsConfig.rtmp.port }, '[RTMP] RTMP server started');
