@@ -1,9 +1,10 @@
 class LiveWebVtt {
-  constructor({ logger, segmentDurationMs, windowSegments, basePath = '/captions' }) {
+  constructor({ logger, segmentDurationMs, windowSegments, basePath = '/captions', minCueDurationMs = 2500 }) {
     this.logger = logger;
     this.segmentDurationMs = Math.max(segmentDurationMs || 6000, 1000);
     this.windowSegments = Math.max(windowSegments || 5, 1);
     this.basePath = basePath;
+    this.minCueDurationMs = Math.max(minCueDurationMs || 0, 0);
     this.segments = new Map();
     this.cues = [];
     this.latestSegmentIndex = -1;
@@ -83,8 +84,17 @@ class LiveWebVtt {
       ''
     ];
 
-    for (const cue of segment.cues) {
-      lines.push(`${this.formatTimestamp(cue.startMs)} --> ${this.formatTimestamp(cue.endMs)}`);
+    const segmentEndMs = segment.startMs + this.segmentDurationMs;
+
+    for (const cue of this.getRenderableCues()) {
+      const localStartMs = Math.max(0, cue.startMs - segment.startMs);
+      const localEndMs = Math.min(this.segmentDurationMs, cue.endMs - segment.startMs);
+
+      if (cue.endMs <= segment.startMs || cue.startMs >= segmentEndMs || localEndMs <= localStartMs) {
+        continue;
+      }
+
+      lines.push(`${this.formatTimestamp(localStartMs)} --> ${this.formatTimestamp(localEndMs)}`);
       lines.push(cue.text);
       lines.push('');
     }
@@ -97,7 +107,7 @@ class LiveWebVtt {
     const earliestMs = firstSegmentIndex * this.segmentDurationMs;
     const lines = ['WEBVTT', ''];
 
-    for (const cue of this.cues) {
+    for (const cue of this.getRenderableCues()) {
       if (cue.endMs <= earliestMs) {
         continue;
       }
@@ -108,6 +118,25 @@ class LiveWebVtt {
     }
 
     return lines.join('\n');
+  }
+
+  getRenderableCues() {
+    return this.cues
+      .map((cue, index) => {
+        const nextCue = this.cues[index + 1];
+        const clippedEndMs = nextCue ? Math.min(cue.endMs, nextCue.startMs) : cue.endMs;
+
+        if (clippedEndMs <= cue.startMs) {
+          return null;
+        }
+
+        return {
+          startMs: cue.startMs,
+          endMs: clippedEndMs,
+          text: cue.text
+        };
+      })
+      .filter(Boolean);
   }
 
   getFirstSegmentIndex() {
@@ -140,7 +169,7 @@ class LiveWebVtt {
 
     return {
       startMs: cue.startMs,
-      endMs: cue.endMs,
+      endMs: Math.max(cue.endMs, cue.startMs + this.minCueDurationMs),
       text
     };
   }

@@ -5,9 +5,72 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    environment:
+      MEDIAPACKAGE_ORIGIN_URL_INTERNAL: ${MEDIAPACKAGE_ORIGIN_URL_INTERNAL:-http://hls-server:3000}
     extra_hosts:
       - "host.docker:host-gateway"
       - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
+      - "1935:1935"
     restart: unless-stopped
+
+  # ── Local HLS origin (dev/test only — not used in production) ─────────────
+  # Pulls the RTMP source and writes HLS to a shared volume.
+  # Retries every 3 s if the RTMP stream is not yet available.
+  # Access the manifest at http://localhost:9090/index.m3u8
+  # Set MEDIAPACKAGE_ORIGIN_URL_INTERNAL=http://hls-server:3000 (inside Docker network)
+  # and  MEDIAPACKAGE_ORIGIN_URL=http://localhost:9090 (from the host).
+  hls-origin:
+    image: linuxserver/ffmpeg:latest
+    profiles:
+      - local
+    volumes:
+      - hls-data:/hls
+    environment:
+      RTMP_URL: ${HLS_RTMP_URL:-rtmp://live-caption-engine/live/primary}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Loop: probe the RTMP URL; if reachable run FFmpeg; on any exit wait 3 s and retry.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          echo "[hls-origin] Probing $$RTMP_URL ..."
+          if ffprobe -v quiet \
+               -i "$$RTMP_URL" 2>/dev/null; then
+            echo "[hls-origin] Stream available — starting HLS output"
+            mkdir -p /hls/vs0
+            ffmpeg -loglevel warning \
+              -i "$$RTMP_URL" \
+              -map 0:v -map 0:a \
+              -c:v copy -c:a copy \
+              -f hls \
+              -hls_time 6 \
+              -hls_list_size 5 \
+              -hls_flags delete_segments \
+              -var_stream_map "v:0,a:0" \
+              -master_pl_name "index.m3u8" \
+              -hls_segment_filename '/hls/vs%v/seg%03d.ts' \
+              '/hls/vs%v/stream.m3u8'
+            echo "[hls-origin] FFmpeg exited — retrying in 3 s"
+          else
+            echo "[hls-origin] Not available — retrying in 3 s"
+          fi
+          sleep 3
+        done
+
+  hls-server:
+    image: nginx:alpine
+    profiles:
+      - local
+    volumes:
+      - hls-data:/hls:ro
+      - ./hls-server.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "9090:3000"
+    depends_on:
+      - hls-origin
+
+volumes:
+  hls-data:

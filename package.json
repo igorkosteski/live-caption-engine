@@ -20,6 +20,7 @@
     "@aws-sdk/signature-v4": "^3.370.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "node-media-server": "^4.2.4",
     "pino": "^9.4.0",
     "ws": "^8.18.0"
   },
@@ -31,6 +32,8 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.js"]
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
   }
 }

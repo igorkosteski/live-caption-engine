@@ -93,6 +93,19 @@ describe('buildConfig', () => {
       expect(cfg.soniox.translationTargetLanguages).toEqual(['en', 'de', 'fr']);
     });
   });
+
+  test('uses internal MediaPackage origin URL when provided', () => {
+    withEnv({
+      ...requiredEnvBase,
+      MEDIAPACKAGE_ORIGIN_URL: 'http://localhost:9090',
+      MEDIAPACKAGE_ORIGIN_URL_INTERNAL: 'http://hls-server:3000'
+    }, () => {
+      const { buildConfig } = require('../src/config');
+      const cfg = buildConfig();
+      expect(cfg.mediapackage.originUrl).toBe('http://localhost:9090');
+      expect(cfg.mediapackage.fetchOriginUrl).toBe('http://hls-server:3000');
+    });
+  });
 });
 
 // ── base-engine ──────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ function make(overrides = {}) {
     logger,
     segmentDurationMs: 6000,
     windowSegments: 3,
+    minCueDurationMs: 2500,
     basePath: '/captions',
     ...overrides
   });
@@ -65,6 +66,12 @@ describe('LiveWebVtt', () => {
       vtt.addCue({ startMs: 0, endMs: 1000, text: '  hello   world  ' });
       expect(vtt.cues[0].text).toBe('hello world');
     });
+
+    test('extends short cues to a minimum display duration', () => {
+      const vtt = make({ minCueDurationMs: 2500 });
+      vtt.addCue({ startMs: 1000, endMs: 1600, text: 'Hello' });
+      expect(vtt.cues[0].endMs).toBe(3500);
+    });
   });
 
   describe('renderSegment', () => {
@@ -87,6 +94,15 @@ describe('LiveWebVtt', () => {
       const rendered = vtt.renderSegment(1);
       // localStart = 7000 - 6000 = 1000ms = 00:00:01.000
       expect(rendered).toMatch('00:00:01.000');
+    });
+
+    test('clips an extended cue at the next cue start', () => {
+      const vtt = make({ segmentDurationMs: 6000, minCueDurationMs: 2500 });
+      vtt.addCue({ startMs: 0, endMs: 1000, text: 'First' });
+      vtt.addCue({ startMs: 1500, endMs: 2000, text: 'Second' });
+      const rendered = vtt.renderSegment(0);
+      expect(rendered).toMatch('00:00:00.000 --> 00:00:01.500');
+      expect(rendered).toMatch('00:00:01.500 --> 00:00:04.000');
     });
   });
 
@@ -123,7 +139,7 @@ describe('LiveWebVtt', () => {
     });
 
     test('respects windowSegments', () => {
-      const vtt = make({ segmentDurationMs: 1000, windowSegments: 2 });
+      const vtt = make({ segmentDurationMs: 1000, windowSegments: 2, minCueDurationMs: 0 });
       for (let i = 0; i < 5; i++) {
         vtt.addCue({ startMs: i * 1000, endMs: i * 1000 + 500, text: `Cue ${i}` });
       }

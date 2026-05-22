@@ -39,13 +39,15 @@ function buildConfig() {
       enabled: toBool(process.env.CAPTIONS_ENABLED, true),
       segmentDurationMs: toInt(process.env.CAPTIONS_SEGMENT_DURATION_MS, 6000),
       windowSegments: toInt(process.env.CAPTIONS_WINDOW_SEGMENTS, 5),
+      minCueDurationMs: toInt(process.env.CAPTIONS_MIN_CUE_DURATION_MS, 2500),
       basePath: process.env.CAPTIONS_BASE_PATH || '/captions'
     },
     mediapackage: {
       // Base egress URL used by the manifest proxy to fetch and re-serve the MPv2 master manifest
       // with EXT-X-MEDIA subtitle tracks injected. Leave empty to disable the proxy.
       // e.g. https://<group>.egress.<id>.mediapackagev2.<region>.amazonaws.com/out/v1/<group>/<ch>/<ep>
-      originUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, '')
+      originUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, ''),
+      fetchOriginUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL_INTERNAL || process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, '')
     },
     dubbing: {
       enabled: toBool(process.env.DUBBING_ENABLED, false),

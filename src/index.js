@@ -6,9 +6,11 @@ const fs = require('fs');
 require('dotenv').config();
 
 const express = require('express');
+const NodeMediaServer = require('node-media-server');
 const logger = require('./logger');
 const { buildConfig } = require('./config');
 const { createEngine } = require('./engines');
+const { patchMasterManifest } = require('./manifest-proxy');
 const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
@@ -41,6 +43,14 @@ async function main() {
   const config = buildConfig();
   const app = express();
   app.use(express.json());
+
+  // ── CORS — allow browser-based HLS players to access manifests/captions ──
+  app.use((_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range');
+    next();
+  });
 
   // ── Active sessions ──────────────────────────────────────────────────────
 
@@ -96,6 +106,7 @@ async function main() {
           logger,
           segmentDurationMs: config.captions.segmentDurationMs,
           windowSegments: config.captions.windowSegments,
+          minCueDurationMs: config.captions.minCueDurationMs,
           basePath: captionsBasePath
         })
       : null;
@@ -114,6 +125,7 @@ async function main() {
             logger,
             segmentDurationMs: config.captions.segmentDurationMs,
             windowSegments: config.captions.windowSegments,
+            minCueDurationMs: config.captions.minCueDurationMs,
             basePath: `${captionsBasePath}/${safeLang}`
           });
 
@@ -364,7 +376,7 @@ async function main() {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ ok: false, message: 'Session not found' });
 
-    const masterUrl = `${config.mediapackage.originUrl}/index.m3u8`;
+    const masterUrl = `${config.mediapackage.fetchOriginUrl}/index.m3u8`;
     let upstreamText;
     try {
       const upstreamRes = await fetch(masterUrl);
@@ -394,13 +406,11 @@ async function main() {
       );
     }
 
-    // Inject subtitle entries + SUBTITLES attribute into EXT-X-STREAM-INF lines.
-    let patched = upstreamText;
-    if (subtitleLines.length > 0) {
-      patched = patched
-        .replace(/^#EXT-X-STREAM-INF:(.+)$/gm, '#EXT-X-STREAM-INF:$1,SUBTITLES="subs"')
-        .replace(/^(#EXTM3U\s*)/, `$1${subtitleLines.join('\n')}\n`);
-    }
+    const patched = patchMasterManifest({
+      upstreamText,
+      subtitleLines,
+      publicOriginUrl: config.mediapackage.originUrl
+    });
 
     res.type('application/vnd.apple.mpegurl').send(patched);
   });
@@ -423,6 +433,27 @@ async function main() {
       'HTTP server listening — POST /sessions to start a stream'
     );
   });
+
+  // ── Start RTMP server ────────────────────────────────────────────────────
+
+  const nmsConfig = {
+    rtmp: {
+      port: process.env.RTMP_PORT || 1935,
+      chunk_size: 60000,
+      gop_cache: true,
+      ping: 30,
+      ping_timeout: 60
+    },
+    http: {
+      port: 8000,
+      allow_origin: '*'
+    }
+  };
+
+  const nms = new NodeMediaServer(nmsConfig);
+  nms.run();
+
+  logger.info({ port: nmsConfig.rtmp.port }, '[RTMP] RTMP server started');
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
 
