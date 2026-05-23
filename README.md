@@ -69,6 +69,17 @@ docker compose down
 
 You can start a session in two ways.
 
+### Local setup checklist
+
+Before starting a session locally, make sure you have:
+
+- a filled `.env` file copied from [.env.example](.env.example)
+- `SONIOX_API_KEY` set if you use `ENGINE=soniox`
+- `GEMINI_API_KEY` set if you use `ENGINE=gemini`
+- a reachable RTMP source URL, usually `rtmp://host.docker.internal/...` when the app runs in Docker
+
+If you want to control translation or dubbing at start time, pass them with the session request or RTMP publish URL. The app does not require extra env vars for per-session language selection.
+
 ### A. Start a session with the HTTP API
 
 This is the most explicit option and lets you set translation and dubbing settings per session.
@@ -110,6 +121,16 @@ Supported RTMP query params:
 If `sessionId` is omitted, the app derives a stable id from the stream path. For example, `/live/primary` becomes `live-primary`.
 
 This is useful when the stream key already identifies the session you want to track.
+
+Example with FFmpeg:
+
+```bash
+ffmpeg -re -stream_loop -1 -i sample.mp4 \
+	-c copy -f flv \
+	"rtmp://localhost:1935/live/primary?languages=en,de&dubbingLanguages=fr&sessionId=primary"
+```
+
+If you are publishing from the host while Docker is running, keep using `localhost:1935` for the app's RTMP server. If the source RTMP server is running on the host and the app is inside Docker, use `host.docker.internal` or `host.docker` in the source URL.
 
 ## 5. ECS Docker and Deploy Flow
 
