@@ -17,6 +17,7 @@ class SonioxEngine extends BaseEngine {
     this.lastTranscriptionLogAt = 0;
     this.sourceCaptionCount = 0;
     this.translatedCaptionCount = 0;
+    this.lastSourceTiming = null;
   }
 
   async start() {
@@ -28,6 +29,7 @@ class SonioxEngine extends BaseEngine {
     this.lastTranscriptionLogAt = 0;
     this.sourceCaptionCount = 0;
     this.translatedCaptionCount = 0;
+    this.lastSourceTiming = null;
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.sonioxConfig.wsUrl);
@@ -103,7 +105,16 @@ class SonioxEngine extends BaseEngine {
 
         if (Array.isArray(message.tokens)) {
           const finalizedTokens = message.tokens.filter((t) => t.is_final);
-          const finalTokens = finalizedTokens.map((t) => t.text).join('');
+          const finalizedSourceTokens = finalizedTokens.filter((token) => !this.isTranslatedToken(token));
+          const finalizedInlineTranslatedTokens = finalizedTokens.filter((token) => this.isTranslatedToken(token));
+
+          const finalizedSourceTiming = this.extractTiming(finalizedSourceTokens)
+            || this.extractTiming(finalizedTokens);
+          if (finalizedSourceTiming) {
+            this.lastSourceTiming = finalizedSourceTiming;
+          }
+
+          const finalTokens = finalizedSourceTokens.map((t) => t.text).join('');
           const nonFinalTokens = message.tokens
             .filter((t) => !t.is_final)
             .map((t) => t.text)
@@ -112,7 +123,7 @@ class SonioxEngine extends BaseEngine {
           if (finalTokens) {
             this.finalText += finalTokens;
             if (!this.suppressSourceCaptions) {
-              this.emitFinalCaption(finalizedTokens);
+              this.emitFinalCaption(finalizedSourceTokens);
             }
           }
 
@@ -154,8 +165,38 @@ class SonioxEngine extends BaseEngine {
               const finalizedTranslated = (translation.tokens ?? []).filter((t) => t.is_final);
 
               if (finalizedTranslated.length > 0) {
-                this.emitFinalCaption(finalizedTranslated, translation.language, finalizedTokens);
+                const fallbackTiming = finalizedSourceTiming
+                  || this.lastSourceTiming
+                  || this.buildTimingFromAudioProcMs(message.final_audio_proc_ms);
+
+                this.emitFinalCaption(finalizedTranslated, translation.language, {
+                  fallbackTokens: finalizedSourceTokens,
+                  fallbackTiming
+                });
               }
+            }
+          } else if (finalizedInlineTranslatedTokens.length > 0) {
+            const translatedByLanguage = new Map();
+
+            for (const token of finalizedInlineTranslatedTokens) {
+              const language = token.language || this.sonioxConfig.translationTargetLanguages?.[0] || 'translated';
+
+              if (!translatedByLanguage.has(language)) {
+                translatedByLanguage.set(language, []);
+              }
+
+              translatedByLanguage.get(language).push(token);
+            }
+
+            const fallbackTiming = finalizedSourceTiming
+              || this.lastSourceTiming
+              || this.buildTimingFromAudioProcMs(message.final_audio_proc_ms);
+
+            for (const [language, translatedTokens] of translatedByLanguage) {
+              this.emitFinalCaption(translatedTokens, language, {
+                fallbackTokens: finalizedSourceTokens,
+                fallbackTiming
+              });
             }
           }
         }
@@ -219,19 +260,25 @@ class SonioxEngine extends BaseEngine {
   }
 
   // language is undefined for source-language captions, a BCP-47 string for translations.
-  // fallbackTokens are the source tokens used for timing when translated tokens lack timing.
-  emitFinalCaption(tokens, language, fallbackTokens) {
+  // fallbackTokens are source tokens and fallbackTiming is an approximate range used
+  // when translated tokens arrive without token-level timestamps.
+  emitFinalCaption(tokens, language, timingFallback = {}) {
     const rawText = tokens.map((token) => token.text).join('').trim();
 
     if (!rawText) {
       return;
     }
 
-    const timingTokens =
-      tokens.find((token) => Number.isFinite(token.start_ms)) ? tokens : (fallbackTokens ?? tokens);
+    const fallbackTokens = Array.isArray(timingFallback)
+      ? timingFallback
+      : (timingFallback.fallbackTokens ?? []);
+    const fallbackTiming = Array.isArray(timingFallback)
+      ? null
+      : (timingFallback.fallbackTiming ?? null);
 
-    const startMs = timingTokens.find((token) => Number.isFinite(token.start_ms))?.start_ms;
-    const endMs = [...timingTokens].reverse().find((token) => Number.isFinite(token.end_ms))?.end_ms;
+    const tokenTiming = this.extractTiming(tokens) || this.extractTiming(fallbackTokens);
+    const startMs = tokenTiming?.startMs ?? fallbackTiming?.startMs;
+    const endMs = tokenTiming?.endMs ?? fallbackTiming?.endMs;
 
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
       this.logger.warn({ tokens, language }, 'Skipping final caption without valid timing');
@@ -270,12 +317,9 @@ class SonioxEngine extends BaseEngine {
         const runText = run.tokens.map((t) => t.text).join('').trim();
         if (!runText) continue;
 
-        const runTimingTokens = run.tokens.find((t) => Number.isFinite(t.start_ms))
-          ? run.tokens
-          : timingTokens;
-
-        const runStart = runTimingTokens.find((t) => Number.isFinite(t.start_ms))?.start_ms ?? startMs;
-        const runEnd = [...runTimingTokens].reverse().find((t) => Number.isFinite(t.end_ms))?.end_ms ?? endMs;
+        const runTiming = this.extractTiming(run.tokens) || tokenTiming;
+        const runStart = runTiming?.startMs ?? startMs;
+        const runEnd = runTiming?.endMs ?? endMs;
 
         this.emit(eventName, {
           startMs: runStart,
@@ -296,6 +340,40 @@ class SonioxEngine extends BaseEngine {
       text: rawText,
       language
     });
+  }
+
+  extractTiming(tokens) {
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+      return null;
+    }
+
+    const startMs = tokens.find((token) => Number.isFinite(token.start_ms))?.start_ms;
+    const endMs = [...tokens].reverse().find((token) => Number.isFinite(token.end_ms))?.end_ms;
+
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      return null;
+    }
+
+    return { startMs, endMs };
+  }
+
+  buildTimingFromAudioProcMs(finalAudioProcMs) {
+    if (!Number.isFinite(finalAudioProcMs)) {
+      return null;
+    }
+
+    const endMs = Math.max(0, finalAudioProcMs);
+    const startMs = Math.max(0, endMs - 1200);
+
+    if (endMs <= startMs) {
+      return null;
+    }
+
+    return { startMs, endMs };
+  }
+
+  isTranslatedToken(token) {
+    return token?.translation_status === 'translation';
   }
 
   async finalize() {

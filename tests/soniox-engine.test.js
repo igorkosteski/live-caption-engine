@@ -193,6 +193,57 @@ describe('SonioxEngine', () => {
       expect(translated[0].language).toBe('en');
       expect(translated[0].text).toBe('Hello');
     });
+
+    test('falls back to final_audio_proc_ms timing when translated tokens have no timestamps', async () => {
+      const engine = makeEngine({ enableTranslation: true, translationTargetLanguages: ['en'] });
+      await engine.start();
+
+      const translated = [];
+      engine.on('final-caption-translated', (cue) => translated.push(cue));
+
+      lastWs.serverSend({
+        tokens: [{ text: 'Извор', is_final: true }],
+        translations: [{
+          language: 'en',
+          tokens: [{ text: 'Source', is_final: true }]
+        }],
+        final_audio_proc_ms: 204480
+      });
+
+      expect(translated).toHaveLength(1);
+      expect(translated[0].language).toBe('en');
+      expect(translated[0].text).toBe('Source');
+      expect(translated[0].startMs).toBe(203280);
+      expect(translated[0].endMs).toBe(204480);
+    });
+
+    test('emits translated captions from inline translation tokens in message.tokens', async () => {
+      const engine = makeEngine({ enableTranslation: true, translationTargetLanguages: ['en'] });
+      await engine.start();
+
+      const source = [];
+      const translated = [];
+      engine.on('final-caption', (cue) => source.push(cue));
+      engine.on('final-caption-translated', (cue) => translated.push(cue));
+
+      lastWs.serverSend({
+        tokens: [
+          { text: 'Извор ', is_final: true, start_ms: 1000, end_ms: 1400, translation_status: 'none' },
+          { text: 'текст', is_final: true, start_ms: 1400, end_ms: 2000, translation_status: 'none' },
+          { text: 'Source ', is_final: true, language: 'en', translation_status: 'translation' },
+          { text: 'text', is_final: true, language: 'en', translation_status: 'translation' }
+        ],
+        final_audio_proc_ms: 2200
+      });
+
+      expect(source).toHaveLength(1);
+      expect(source[0].text).toBe('Извор текст');
+      expect(translated).toHaveLength(1);
+      expect(translated[0].language).toBe('en');
+      expect(translated[0].text).toBe('Source text');
+      expect(translated[0].startMs).toBe(1000);
+      expect(translated[0].endMs).toBe(2000);
+    });
   });
 
   describe('diarization', () => {
