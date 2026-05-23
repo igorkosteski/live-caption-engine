@@ -65,7 +65,53 @@ This compose file also maps `host.docker` to the same host gateway if you prefer
 docker compose down
 ```
 
-## 4. ECS Docker and Deploy Flow
+## 4. Local Session Workflows
+
+You can start a session in two ways.
+
+### A. Start a session with the HTTP API
+
+This is the most explicit option and lets you set translation and dubbing settings per session.
+
+```bash
+curl -X POST http://localhost:8080/sessions \
+	-H 'Content-Type: application/json' \
+	-d '{
+		"rtmpUrl": "rtmp://host.docker.internal/live/primary",
+		"languages": ["en", "de"],
+		"dubbingLanguages": ["fr"]
+	}'
+```
+
+Supported request fields:
+
+- `rtmpUrl`: RTMP source URL for the session
+- `languages`: translation target languages
+- `dubbingLanguages`: dubbing target languages
+
+The response includes the per-session endpoints for captions, dubbing, and manifest playback.
+
+### B. Start a session by publishing RTMP
+
+When you push to the built-in RTMP server, the app can create and clean up the session automatically.
+
+Example publish URL:
+
+```text
+rtmp://localhost:1935/live/primary?languages=en,de&dubbingLanguages=fr&sessionId=primary
+```
+
+Supported RTMP query params:
+
+- `languages`: comma-separated translation target languages
+- `dubbingLanguages`: comma-separated dubbing target languages
+- `sessionId`: optional explicit session id
+
+If `sessionId` is omitted, the app derives a stable id from the stream path. For example, `/live/primary` becomes `live-primary`.
+
+This is useful when the stream key already identifies the session you want to track.
+
+## 5. ECS Docker and Deploy Flow
 
 1. Build ECS image:
 
@@ -88,7 +134,7 @@ docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:late
 
 4. Run task or update ECS service with the new task revision.
 
-## 5. Engine Architecture
+## 6. Engine Architecture
 
 - `src/engines/base-engine.js`: interface all engines implement
 - `src/engines/soniox-engine.js`: Soniox realtime implementation
@@ -99,7 +145,7 @@ To add a new provider later:
 2. Implement `start`, `sendAudio`, `finalize`, `stop`
 3. Register it in `src/engines/index.js`
 
-## 6. Important Environment Variables
+## 7. Important Environment Variables
 
 - `ENGINE`: transcription engine (currently `soniox`)
 - `RTMP_URL`: source RTMP stream URL
@@ -112,7 +158,7 @@ To add a new provider later:
 - `RECONNECT_DELAY_MS`: delay between retries
 - `MAX_RETRIES`: 0 = unlimited retries
 
-## 7. Live Captions Output
+## 8. Live Captions Output
 
 When captions are enabled, the service exposes live WebVTT output from the same HTTP server:
 
@@ -134,7 +180,7 @@ curl http://localhost:8080/captions/live.vtt
 curl http://localhost:8080/captions/index.m3u8
 ```
 
-## 8. Notes
+## 9. Notes
 
 - The service logs partial and finalized transcripts to stdout.
 - Finalized Soniox tokens are converted into timed WebVTT cues.
