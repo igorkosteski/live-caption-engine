@@ -1,11 +1,13 @@
 # Live Caption Engine
 
-Node.js service that reads audio from an RTMP live stream and transcribes it using pluggable engines.
+Node.js service that ingests live RTMP audio, transcribes it with pluggable realtime engines, and exposes per-session caption and dubbing endpoints.
 
-This initial version includes:
+This version includes:
 - Engine abstraction for multiple transcription providers
-- Soniox realtime WebSocket engine implementation
+- Soniox and Gemini realtime transcription engines
 - RTMP ingest with FFmpeg
+- Session lifecycle API plus RTMP auto-session management
+- Optional per-language live dubbing output (Gemini Live or Polly over translated captions)
 - Docker setup for local runs
 - ECS-ready Dockerfile and task definition template
 
@@ -13,7 +15,8 @@ This initial version includes:
 
 - Node.js 20+
 - FFmpeg (if running without Docker)
-- Soniox API key
+- Soniox API key if `ENGINE=soniox` (default)
+- Gemini API key if `ENGINE=gemini` or `DUBBING_ENGINE=gemini`
 
 ## 2. Quick Start (Local Node)
 
@@ -75,10 +78,10 @@ Before starting a session locally, make sure you have:
 
 - a filled `.env` file copied from [.env.example](.env.example)
 - `SONIOX_API_KEY` set if you use `ENGINE=soniox`
-- `GEMINI_API_KEY` set if you use `ENGINE=gemini`
+- `GEMINI_API_KEY` set if you use `ENGINE=gemini` or `DUBBING_ENGINE=gemini`
 - a reachable RTMP source URL, usually `rtmp://host.docker.internal/...` when the app runs in Docker
 
-If you want to control translation or dubbing at start time, pass them with the session request or RTMP publish URL. The app does not require extra env vars for per-session language selection.
+If you want to control translation or dubbing at start time, pass them with the session request or RTMP publish URL.
 
 ### A. Start a session with the HTTP API
 
@@ -86,12 +89,12 @@ This is the most explicit option and lets you set translation and dubbing settin
 
 ```bash
 curl -X POST http://localhost:8080/sessions \
-	-H 'Content-Type: application/json' \
-	-d '{
-		"rtmpUrl": "rtmp://host.docker.internal/live/primary",
-		"languages": ["en", "de"],
-		"dubbingLanguages": ["fr"]
-	}'
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rtmpUrl": "rtmp://host.docker.internal/live/primary",
+    "languages": ["en", "de"],
+    "dubbingLanguages": ["fr"]
+  }'
 ```
 
 Supported request fields:
@@ -100,7 +103,7 @@ Supported request fields:
 - `languages`: translation target languages
 - `dubbingLanguages`: dubbing target languages
 
-The response includes the per-session endpoints for captions, dubbing, and manifest playback.
+The response includes per-session endpoints for captions, dubbing, and manifest playback.
 
 ### B. Start a session by publishing RTMP
 
@@ -120,17 +123,13 @@ Supported RTMP query params:
 
 If `sessionId` is omitted, the app derives a stable id from the stream path. For example, `/live/primary` becomes `live-primary`.
 
-This is useful when the stream key already identifies the session you want to track.
-
 Example with FFmpeg:
 
 ```bash
 ffmpeg -re -stream_loop -1 -i sample.mp4 \
-	-c copy -f flv \
-	"rtmp://localhost:1935/live/primary?languages=en,de&dubbingLanguages=fr&sessionId=primary"
+  -c copy -f flv \
+  "rtmp://localhost:1935/live/primary?languages=en,de&dubbingLanguages=fr&sessionId=primary"
 ```
-
-If you are publishing from the host while Docker is running, keep using `localhost:1935` for the app's RTMP server. If the source RTMP server is running on the host and the app is inside Docker, use `host.docker.internal` or `host.docker` in the source URL.
 
 ## 5. ECS Docker and Deploy Flow
 
@@ -147,63 +146,82 @@ docker tag live-caption-engine:latest <account-id>.dkr.ecr.<region>.amazonaws.co
 docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
 ```
 
-3. Create/Update ECS task definition from template:
+3. Create or update ECS task definition from template:
 
 - Edit `deploy/ecs-task-definition.template.json`
 - Set account id, region, roles, RTMP URL
-- Keep `SONIOX_API_KEY` in AWS Secrets Manager
+- Keep API keys in AWS Secrets Manager
 
 4. Run task or update ECS service with the new task revision.
 
 ## 6. Engine Architecture
 
-- `src/engines/base-engine.js`: interface all engines implement
-- `src/engines/soniox-engine.js`: Soniox realtime implementation
-- `src/engines/index.js`: engine selector by `ENGINE`
+- `src/engines/base-engine.js`: engine interface
+- `src/engines/soniox-engine.js`: single Soniox session
+- `src/engines/soniox-multi-engine.js`: one Soniox session per translation target language
+- `src/engines/gemini-engine.js`: Gemini realtime transcription
+- `src/engines/gemini-dubbing-engine.js`: Gemini realtime dubbing
+- `src/engines/polly-dubbing-engine.js`: Polly TTS dubbing from translated captions
+- `src/engines/index.js`: transcription engine selector by `ENGINE`
 
-To add a new provider later:
-1. Create `src/engines/<provider>-engine.js`
-2. Implement `start`, `sendAudio`, `finalize`, `stop`
-3. Register it in `src/engines/index.js`
+Notes:
+- `DUBBING_ENGINE=soniox` currently aliases to the Polly dubbing path (Polly TTS over Soniox translated captions).
+- There is no separate Soniox-native TTS dubbing engine implementation in this repository.
 
 ## 7. Important Environment Variables
 
-- `ENGINE`: transcription engine (currently `soniox`)
+- `ENGINE`: transcription engine (`soniox` or `gemini`; default: `soniox`)
 - `RTMP_URL`: source RTMP stream URL
 - `SONIOX_API_KEY`: Soniox API key
 - `SONIOX_MODEL`: Soniox realtime model
 - `SONIOX_WS_URL`: Soniox realtime WebSocket endpoint
+- `GEMINI_API_KEY`: Gemini API key
+- `ENABLE_TRANSLATION`: enables translation output in the active transcription engine
+- `TRANSLATION_TARGET_LANGUAGES`: comma-separated translation target languages
+- `TRANSLATION_SOURCE_LANGUAGE`: optional source-language hint
+- `DUBBING_ENABLED`: enables dubbing outputs
+- `DUBBING_ENGINE`: `gemini`, `polly`, or `soniox` (alias to Polly path)
+- `DUBBING_TARGET_LANGUAGES`: comma-separated dubbing target languages
+- `DUBBING_GEMINI_VOICE`: Gemini dubbing voice (default `Aoede`)
+- `POLLY_VOICES`: per-language Polly voice overrides, for example `en:Joanna,de:Daniel`
 - `AUDIO_SAMPLE_RATE`: FFmpeg output sample rate
 - `AUDIO_CHANNELS`: FFmpeg output channels
 - `NO_AUDIO_TIMEOUT_MS`: restart pipeline if no audio arrives for this duration
 - `RECONNECT_DELAY_MS`: delay between retries
-- `MAX_RETRIES`: 0 = unlimited retries
+- `MAX_RETRIES`: 0 means unlimited retries
 
-## 8. Live Captions Output
+## 8. Per-Session Captions and Dubbing Output
 
-When captions are enabled, the service exposes live WebVTT output from the same HTTP server:
+When captions are enabled, each active session exposes WebVTT and subtitle playlists:
 
-- `GET /captions/live.vtt`: rolling WebVTT file with the retained live cue window
-- `GET /captions/index.m3u8`: HLS subtitle playlist referencing WebVTT segments
-- `GET /captions/segments/<n>.vtt`: individual WebVTT subtitle segment
+- `GET /sessions/:sessionId/captions/live.vtt`: rolling source-language WebVTT
+- `GET /sessions/:sessionId/captions/index.m3u8`: source-language subtitle playlist
+- `GET /sessions/:sessionId/captions/segments/:segmentIndex.vtt`: source-language segment
+- `GET /sessions/:sessionId/captions/:lang/live.vtt`: rolling translated WebVTT
+- `GET /sessions/:sessionId/captions/:lang/index.m3u8`: translated subtitle playlist
+- `GET /sessions/:sessionId/captions/:lang/segments/:segmentIndex.vtt`: translated segment
+- `GET /sessions/:sessionId/dub/:lang/audio.pcm`: live dubbed PCM stream
+- `GET /sessions/:sessionId/manifest/master.m3u8`: patched MediaPackage manifest with subtitle tracks
 
-Useful environment variables:
+Useful caption variables:
 
-- `CAPTIONS_ENABLED`: enable or disable WebVTT output
-- `CAPTIONS_SEGMENT_DURATION_MS`: subtitle segment duration
-- `CAPTIONS_WINDOW_SEGMENTS`: number of recent segments to retain in memory
-- `CAPTIONS_BASE_PATH`: HTTP base path for caption endpoints
+- `CAPTIONS_ENABLED`
+- `CAPTIONS_SEGMENT_DURATION_MS`
+- `CAPTIONS_WINDOW_SEGMENTS`
+- `CAPTIONS_MIN_CUE_DURATION_MS`
 
 Example local checks:
 
 ```bash
-curl http://localhost:8080/captions/live.vtt
-curl http://localhost:8080/captions/index.m3u8
+curl http://localhost:8080/sessions
+# replace <sessionId> with an active session id
+curl http://localhost:8080/sessions/<sessionId>/captions/live.vtt
+curl http://localhost:8080/sessions/<sessionId>/captions/en/live.vtt
+curl -N http://localhost:8080/sessions/<sessionId>/dub/en/audio.pcm
 ```
 
 ## 9. Notes
 
-- The service logs partial and finalized transcripts to stdout.
-- Finalized Soniox tokens are converted into timed WebVTT cues.
-- The Soniox stream is finalized when FFmpeg stream ends.
-- Use CloudWatch logs in ECS to consume transcript updates.
+- The service logs transcript and session lifecycle events to stdout.
+- Finalized tokens are converted into timed WebVTT cues.
+- Use CloudWatch logs in ECS to consume runtime updates.
