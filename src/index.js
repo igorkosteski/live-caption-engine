@@ -174,7 +174,14 @@ async function main() {
 
         dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
-      } else if (config.dubbing.engine === 'polly') {
+      } else if (config.dubbing.engine === 'polly' || config.dubbing.engine === 'soniox') {
+        if (config.dubbing.engine === 'soniox') {
+          logger.info(
+            { targetLanguage: lang },
+            'DUBBING_ENGINE=soniox selected; using Polly TTS over Soniox translated captions'
+          );
+        }
+
         const dubbingEngine = new PollyDubbingEngine({
           logger,
           awsRegion: config.dubbing.awsRegion,
@@ -188,7 +195,7 @@ async function main() {
         dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
       } else {
-        throw new Error(`Unknown DUBBING_ENGINE: ${config.dubbing.engine}. Use 'gemini' or 'polly'.`);
+        throw new Error(`Unknown DUBBING_ENGINE: ${config.dubbing.engine}. Use 'gemini', 'polly', or 'soniox'.`);
       }
     }
 

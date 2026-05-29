@@ -51,7 +51,9 @@ function buildConfig() {
     },
     dubbing: {
       enabled: toBool(process.env.DUBBING_ENABLED, false),
-      // 'gemini' uses Gemini Live audio-in/audio-out; 'polly' uses AWS Polly TTS on translated captions.
+      // 'gemini' uses Gemini Live audio-in/audio-out.
+      // 'polly' uses AWS Polly TTS on translated captions.
+      // 'soniox' is an alias for the Polly path when the main transcription engine is Soniox.
       engine: process.env.DUBBING_ENGINE || 'gemini',
       // Defaults to the same languages as translation if not specified separately.
       targetLanguages: (process.env.DUBBING_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGE || '')
