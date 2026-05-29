@@ -165,8 +165,8 @@ docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:late
 - `src/engines/index.js`: transcription engine selector by `ENGINE`
 
 Notes:
-- `DUBBING_ENGINE=soniox` currently aliases to the Polly dubbing path (Polly TTS over Soniox translated captions).
-- There is no separate Soniox-native TTS dubbing engine implementation in this repository.
+- `DUBBING_ENGINE=soniox` uses Soniox realtime TTS over translated captions.
+- Soniox dubbing is implemented in `src/engines/soniox-dubbing-engine.js`.
 
 ## 7. Important Environment Variables
 
@@ -184,6 +184,12 @@ Notes:
 - `DUBBING_TARGET_LANGUAGES`: comma-separated dubbing target languages
 - `DUBBING_GEMINI_VOICE`: Gemini dubbing voice (default `Aoede`)
 - `POLLY_VOICES`: per-language Polly voice overrides, for example `en:Joanna,de:Daniel`
+- `DUBBING_SONIOX_MODEL`: Soniox TTS model (default `tts-rt-v1`)
+- `DUBBING_SONIOX_VOICE`: default Soniox voice (default `Adrian`)
+- `DUBBING_SONIOX_VOICES`: per-language Soniox voice overrides, for example `en:Adrian,de:Daniel`
+- `DUBBING_SONIOX_SAMPLE_RATE`: Soniox TTS output sample rate (default `24000`)
+- `DUBBING_SONIOX_BITRATE`: optional output bitrate for compressed formats
+- `SONIOX_TTS_WS_URL`: optional Soniox realtime TTS WebSocket override
 - `AUDIO_SAMPLE_RATE`: FFmpeg output sample rate
 - `AUDIO_CHANNELS`: FFmpeg output channels
 - `NO_AUDIO_TIMEOUT_MS`: restart pipeline if no audio arrives for this duration

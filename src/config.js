@@ -18,6 +18,15 @@ const toBool = (value, fallback = false) => {
   return String(value).toLowerCase() === 'true';
 };
 
+const toOptionalInt = (value) => {
+  if (typeof value === 'undefined' || value === '') {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
 function buildConfig() {
   const engine = process.env.ENGINE || 'soniox';
 
@@ -53,7 +62,7 @@ function buildConfig() {
       enabled: toBool(process.env.DUBBING_ENABLED, false),
       // 'gemini' uses Gemini Live audio-in/audio-out.
       // 'polly' uses AWS Polly TTS on translated captions.
-      // 'soniox' is an alias for the Polly path when the main transcription engine is Soniox.
+      // 'soniox' uses Soniox realtime TTS over translated captions.
       engine: process.env.DUBBING_ENGINE || 'gemini',
       // Defaults to the same languages as translation if not specified separately.
       targetLanguages: (process.env.DUBBING_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGES || process.env.TRANSLATION_TARGET_LANGUAGE || '')
@@ -81,7 +90,22 @@ function buildConfig() {
       ),
       // Sub-path prefix under ingestUrl for audio HLS segments, e.g. "dub-audio".
       // Each language gets "<audioPath>-<lang>/audio.m3u8" and "<audioPath>-<lang>/seg-N.aac".
-      audioPath: process.env.DUBBING_AUDIO_PATH || 'dub-audio'
+      audioPath: process.env.DUBBING_AUDIO_PATH || 'dub-audio',
+      // Soniox TTS config used when DUBBING_ENGINE=soniox.
+      sonioxApiKey: process.env.SONIOX_API_KEY || '',
+      sonioxTtsWsUrl: process.env.SONIOX_TTS_WS_URL || 'wss://tts-rt.soniox.com/tts-websocket',
+      sonioxModel: process.env.DUBBING_SONIOX_MODEL || process.env.SONIOX_TTS_MODEL || 'tts-rt-v1',
+      sonioxVoice: process.env.DUBBING_SONIOX_VOICE || 'Adrian',
+      sonioxVoices: Object.fromEntries(
+        (process.env.DUBBING_SONIOX_VOICES || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((pair) => pair.split(':').map((p) => p.trim()))
+          .filter(([lang, voice]) => lang && voice)
+      ),
+      sonioxSampleRate: toInt(process.env.DUBBING_SONIOX_SAMPLE_RATE, 24000),
+      sonioxBitrate: toOptionalInt(process.env.DUBBING_SONIOX_BITRATE)
     },
     engine,
     soniox: engine === 'soniox' ? {

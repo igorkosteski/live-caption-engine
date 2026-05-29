@@ -16,6 +16,7 @@ const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
 const PollyDubbingEngine = require('./engines/polly-dubbing-engine');
+const SonioxDubbingEngine = require('./engines/soniox-dubbing-engine');
 
 function warnOnUnreachableRtmpHost(rtmpUrl) {
   let parsedUrl;
@@ -174,14 +175,7 @@ async function main() {
 
         dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
-      } else if (config.dubbing.engine === 'polly' || config.dubbing.engine === 'soniox') {
-        if (config.dubbing.engine === 'soniox') {
-          logger.info(
-            { targetLanguage: lang },
-            'DUBBING_ENGINE=soniox selected; using Polly TTS over Soniox translated captions'
-          );
-        }
-
+      } else if (config.dubbing.engine === 'polly') {
         const dubbingEngine = new PollyDubbingEngine({
           logger,
           awsRegion: config.dubbing.awsRegion,
@@ -191,6 +185,25 @@ async function main() {
         });
 
         dubbingEngine.start();
+
+        dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
+
+      } else if (config.dubbing.engine === 'soniox') {
+        if (!config.dubbing.sonioxApiKey) throw new Error('DUBBING_ENGINE=soniox requires SONIOX_API_KEY');
+
+        const dubbingEngine = new SonioxDubbingEngine({
+          logger,
+          engine,
+          targetLanguage: lang,
+          apiKey: config.dubbing.sonioxApiKey,
+          wsUrl: config.dubbing.sonioxTtsWsUrl,
+          model: config.dubbing.sonioxModel,
+          voice: config.dubbing.sonioxVoices[lang] || config.dubbing.sonioxVoice,
+          sampleRate: config.dubbing.sonioxSampleRate,
+          bitrate: config.dubbing.sonioxBitrate
+        });
+
+        await dubbingEngine.start();
 
         dubbingEngines.push({ engine: dubbingEngine, lang, safeLang });
 
