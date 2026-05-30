@@ -2,6 +2,8 @@
 
 const { randomUUID } = require('crypto');
 const fs = require('fs');
+const path = require('path');
+const { EventEmitter } = require('events');
 
 require('dotenv').config();
 
@@ -14,6 +16,7 @@ const { patchMasterManifest } = require('./manifest-proxy');
 const { createAutoSessionManager } = require('./rtmp-auto-session');
 const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
+const AudioHlsPublisher = require('./dubbing/audio-hls-publisher');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
 const PollyDubbingEngine = require('./engines/polly-dubbing-engine');
 const SonioxDubbingEngine = require('./engines/soniox-dubbing-engine');
@@ -43,6 +46,7 @@ function warnOnUnreachableRtmpHost(rtmpUrl) {
 
 async function main() {
   const config = buildConfig();
+  const dubbingHlsOutputRoot = process.env.DUBBING_HLS_OUTPUT_ROOT || '/tmp/live-caption-engine-dub-hls';
   const app = express();
   app.use(express.json());
 
@@ -151,6 +155,10 @@ async function main() {
 
     /** @type {Array<{engine: object, lang: string, safeLang: string}>} */
     const dubbingEngines = [];
+    /** @type {Array<{publisher: AudioHlsPublisher, lang: string, safeLang: string, relativePath: string}>} */
+    const dubbingHlsPublishers = [];
+    const sourceAudioEmitter = new EventEmitter();
+    let detachSourceAudioForwarder = null;
 
     for (const lang of dubbingTargetLangs) {
       const safeLang = lang.replace(/[^a-zA-Z0-9-]/g, '');
@@ -214,6 +222,59 @@ async function main() {
 
     await streamSession.start();
 
+    const forwardSourceAudio = (chunk) => sourceAudioEmitter.emit('data', chunk);
+    streamSession.on('audio', forwardSourceAudio);
+    detachSourceAudioForwarder = () => streamSession.removeListener('audio', forwardSourceAudio);
+
+    const sourceAudioPublisher = new AudioHlsPublisher({
+      logger,
+      ffmpegPath: streamConfig.ffmpegPath,
+      dubbingStream: sourceAudioEmitter,
+      sampleRate: streamConfig.sampleRate,
+      channels: streamConfig.channels,
+      outputRoot: dubbingHlsOutputRoot,
+      sessionId,
+      safeLang: 'src',
+      audioPath: config.dubbing.audioPath,
+      segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000)),
+      windowSegments: config.captions.windowSegments
+    });
+
+    await sourceAudioPublisher.start();
+
+    dubbingHlsPublishers.push({
+      publisher: sourceAudioPublisher,
+      lang: 'src',
+      safeLang: 'src',
+      relativePath: `${config.dubbing.audioPath}-src/audio.m3u8`
+    });
+
+    for (const { engine: dubbingEngine, lang, safeLang } of dubbingEngines) {
+      const { sampleRate, channels } = dubbingEngine.dubbingStream;
+      const publisher = new AudioHlsPublisher({
+        logger,
+        ffmpegPath: streamConfig.ffmpegPath,
+        dubbingStream: dubbingEngine.dubbingStream,
+        sampleRate,
+        channels,
+        outputRoot: dubbingHlsOutputRoot,
+        sessionId,
+        safeLang,
+        audioPath: config.dubbing.audioPath,
+        segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000)),
+        windowSegments: config.captions.windowSegments
+      });
+
+      await publisher.start();
+
+      dubbingHlsPublishers.push({
+        publisher,
+        lang,
+        safeLang,
+        relativePath: `${config.dubbing.audioPath}-${safeLang}/audio.m3u8`
+      });
+    }
+
     // ── Build endpoint map for the API response ──────────────────────────────
 
     const endpoints = {
@@ -226,6 +287,10 @@ async function main() {
         lang,
         url: `/sessions/${sessionId}/dub/${safeLang}/audio.pcm`
       })),
+      dubHls: dubbingHlsPublishers.map(({ lang, safeLang }) => ({
+        lang,
+        url: `/sessions/${sessionId}/dub/${safeLang}/audio.m3u8`
+      })),
       manifest: config.mediapackage.originUrl
         ? `/sessions/${sessionId}/manifest/master.m3u8`
         : null
@@ -236,6 +301,14 @@ async function main() {
     // ── Teardown helper ──────────────────────────────────────────────────────
 
     const stop = async () => {
+      if (detachSourceAudioForwarder) {
+        detachSourceAudioForwarder();
+        detachSourceAudioForwarder = null;
+      }
+
+      for (const { publisher } of dubbingHlsPublishers) {
+        try { await publisher.stop(); } catch { /* ignore */ }
+      }
       for (const { engine: dubbingEngine } of dubbingEngines) {
         try { await dubbingEngine.stop?.(); } catch { /* ignore */ }
       }
@@ -252,6 +325,7 @@ async function main() {
       captions,
       translatedCaptionsByLang,
       dubbingEngines,
+      dubbingHlsPublishers,
       endpoints,
       stop
     };
@@ -403,6 +477,63 @@ async function main() {
     );
   });
 
+  app.get('/sessions/:sessionId/dub/:lang/audio.m3u8', (req, res) => {
+    const session = sessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ ok: false });
+
+    const safeLang = req.params.lang.replace(/[^a-zA-Z0-9-]/g, '');
+    if (!session.dubbingHlsPublishers.some((e) => e.safeLang === safeLang)) {
+      return res.status(404).json({ ok: false });
+    }
+
+    const playlistPath = path.join(
+      dubbingHlsOutputRoot,
+      req.params.sessionId,
+      `${config.dubbing.audioPath}-${safeLang}`,
+      'audio.m3u8'
+    );
+
+    if (!fs.existsSync(playlistPath)) {
+      const targetDuration = Math.max(1, Math.round(config.captions.segmentDurationMs / 1000));
+      const warmupPlaylist = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:6',
+        `#EXT-X-TARGETDURATION:${targetDuration}`,
+        '#EXT-X-MEDIA-SEQUENCE:0'
+      ].join('\n');
+      return res.type('application/vnd.apple.mpegurl').send(warmupPlaylist);
+    }
+
+    res.type('application/vnd.apple.mpegurl').sendFile(playlistPath);
+  });
+
+  app.get('/sessions/:sessionId/dub/:lang/:segmentFile', (req, res) => {
+    const session = sessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ ok: false });
+
+    if (!/^seg-\d+\.ts$/.test(req.params.segmentFile)) {
+      return res.status(404).json({ ok: false });
+    }
+
+    const safeLang = req.params.lang.replace(/[^a-zA-Z0-9-]/g, '');
+    if (!session.dubbingHlsPublishers.some((e) => e.safeLang === safeLang)) {
+      return res.status(404).json({ ok: false });
+    }
+
+    const segmentPath = path.join(
+      dubbingHlsOutputRoot,
+      req.params.sessionId,
+      `${config.dubbing.audioPath}-${safeLang}`,
+      req.params.segmentFile
+    );
+
+    if (!fs.existsSync(segmentPath)) {
+      return res.status(404).json({ ok: false });
+    }
+
+    res.type('video/mp2t').sendFile(segmentPath);
+  });
+
   // ── MediaPackage manifest proxy ───────────────────────────────────────────
   //
   // Fetches the MPv2 egress HLS master manifest and injects EXT-X-MEDIA subtitle
@@ -432,7 +563,9 @@ async function main() {
 
     // Build EXT-X-MEDIA entries for source + translated caption tracks.
     const baseUrl = `${req.protocol}://${req.get('host')}/sessions/${req.params.sessionId}/captions`;
+    const dubBaseUrl = `${req.protocol}://${req.get('host')}/sessions/${req.params.sessionId}/dub`;
     const subtitleLines = [];
+    const audioLines = [];
 
     if (session.captions) {
       subtitleLines.push(
@@ -447,9 +580,17 @@ async function main() {
       );
     }
 
+    for (const { lang, safeLang } of session.dubbingHlsPublishers) {
+      const isSource = lang === 'src';
+      audioLines.push(
+        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${isSource ? 'Original' : `Dub ${lang}`}",DEFAULT=${isSource ? 'YES' : 'NO'},AUTOSELECT=YES,URI="${dubBaseUrl}/${safeLang}/audio.m3u8"`
+      );
+    }
+
     const patched = patchMasterManifest({
       upstreamText,
       subtitleLines,
+      audioLines,
       publicOriginUrl: config.mediapackage.originUrl
     });
 

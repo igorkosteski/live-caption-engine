@@ -61,7 +61,7 @@ function makeEngine(overrides = {}) {
 }
 
 describe('SonioxDubbingEngine', () => {
-  test('start() opens ws and sends config', async () => {
+  test('start() opens ws and sends config + start message', async () => {
     const { dubbing } = makeEngine();
     await dubbing.start();
 
@@ -75,6 +75,13 @@ describe('SonioxDubbingEngine', () => {
       voice: 'Adrian',
       audio_format: 'pcm_s16le',
       sample_rate: 24000
+    });
+
+    const startMessage = JSON.parse(lastWs.sent[1]);
+    expect(startMessage).toMatchObject({
+      stream_id: expect.any(String),
+      text: '',
+      text_end: false
     });
   });
 
@@ -90,7 +97,7 @@ describe('SonioxDubbingEngine', () => {
 
     engine.emit('final-caption-translated', { language: 'en', text: 'Hello world' });
 
-    const textMsg = JSON.parse(lastWs.sent[1]);
+    const textMsg = JSON.parse(lastWs.sent[2]);
     expect(textMsg.text).toBe('Hello world');
     expect(textMsg.text_end).toBe(false);
     expect(textMsg.stream_id).toBeTruthy();
@@ -102,8 +109,8 @@ describe('SonioxDubbingEngine', () => {
 
     engine.emit('final-caption-translated', { language: 'de', text: 'Hallo' });
 
-    // Only initial config should be sent.
-    expect(lastWs.sent).toHaveLength(1);
+    // Initial config + start message only.
+    expect(lastWs.sent).toHaveLength(2);
   });
 
   test('pushes received audio chunks into dubbingStream', async () => {

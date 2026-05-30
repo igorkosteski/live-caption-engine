@@ -48,6 +48,11 @@ class SonioxDubbingEngine {
     this.connected = false;
     this.closedByClient = false;
     this._onCaption = null;
+    this._streamStarted = false;
+    this._lastStartRetryAt = 0;
+    this._startRetryCount = 0;
+    this._reconnectInFlight = false;
+    this._lastTimeoutWarnAt = 0;
 
     this.dubbingStream = new DubbingStream({
       logger,
@@ -63,6 +68,37 @@ class SonioxDubbingEngine {
     }
 
     this.closedByClient = false;
+    await this._connectWebSocket();
+
+    this._onCaption = (cue) => {
+      if (cue.language !== this.targetLanguage) {
+        return;
+      }
+
+      const text = (cue.text || '').trim();
+      if (!text || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      if (!this._streamStarted) {
+        this._sendStartMessage();
+      }
+
+      this.ws.send(
+        JSON.stringify({
+          stream_id: this.streamId,
+          text,
+          text_end: false
+        })
+      );
+    };
+
+    this._engine.on('final-caption-translated', this._onCaption);
+  }
+
+  async _connectWebSocket() {
+    this.streamId = `dub-${this.targetLanguage}-${randomUUID()}`;
+    this._streamStarted = false;
 
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(this.wsUrl);
@@ -88,6 +124,9 @@ class SonioxDubbingEngine {
         }
 
         ws.send(JSON.stringify(config));
+        this._startRetryCount = 0;
+        this._lastStartRetryAt = 0;
+        this._sendStartMessage();
         this.connected = true;
         clearTimeout(startupTimeout);
 
@@ -96,7 +135,8 @@ class SonioxDubbingEngine {
             targetLanguage: this.targetLanguage,
             model: this.model,
             voice: this.voice,
-            sampleRate: this.sampleRate
+            sampleRate: this.sampleRate,
+            streamId: this.streamId
           },
           'Soniox dubbing session connected'
         );
@@ -113,6 +153,43 @@ class SonioxDubbingEngine {
         }
 
         if (message.error_code) {
+          const isStartMessageError =
+            message.error_code === 400 && /start message first/i.test(message.error_message || '');
+
+          if (isStartMessageError) {
+            const now = Date.now();
+            if (now - this._lastStartRetryAt >= 1000) {
+              this._lastStartRetryAt = now;
+              this._startRetryCount += 1;
+              this._streamStarted = false;
+              this.logger.warn(
+                {
+                  targetLanguage: this.targetLanguage,
+                  streamId: this.streamId,
+                  retryCount: this._startRetryCount
+                },
+                'Soniox requested stream start; re-sending start message'
+              );
+              this._sendStartMessage();
+            }
+
+            if (this._startRetryCount >= 3) {
+              this._reconnectWebSocket('repeated-start-message-errors');
+            }
+          }
+
+          if (message.error_code === 408) {
+            const now = Date.now();
+            if (now - this._lastTimeoutWarnAt >= 10000) {
+              this._lastTimeoutWarnAt = now;
+              this.logger.warn(
+                { targetLanguage: this.targetLanguage, streamId: this.streamId },
+                'Soniox dubbing idle timeout (non-fatal); waiting for next translated caption'
+              );
+            }
+            return;
+          }
+
           this.logger.error(
             {
               targetLanguage: this.targetLanguage,
@@ -141,6 +218,7 @@ class SonioxDubbingEngine {
 
       ws.on('close', (code, reason) => {
         this.connected = false;
+        this._streamStarted = false;
         this.logger.warn(
           {
             code,
@@ -152,27 +230,53 @@ class SonioxDubbingEngine {
         );
       });
     });
+  }
 
-    this._onCaption = (cue) => {
-      if (cue.language !== this.targetLanguage) {
-        return;
+  async _reconnectWebSocket(reason) {
+    if (this.closedByClient || this._reconnectInFlight) {
+      return;
+    }
+
+    this._reconnectInFlight = true;
+
+    this.logger.warn(
+      { targetLanguage: this.targetLanguage, streamId: this.streamId, reason },
+      'Reconnecting Soniox dubbing websocket'
+    );
+
+    try {
+      const ws = this.ws;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      } else if (ws && ws.readyState === WebSocket.CONNECTING) {
+        ws.terminate();
       }
 
-      const text = (cue.text || '').trim();
-      if (!text || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        return;
-      }
-
-      this.ws.send(
-        JSON.stringify({
-          stream_id: this.streamId,
-          text,
-          text_end: false
-        })
+      await this._connectWebSocket();
+    } catch (err) {
+      this.logger.error(
+        { err, targetLanguage: this.targetLanguage },
+        'Failed to reconnect Soniox dubbing websocket'
       );
-    };
+    } finally {
+      this._reconnectInFlight = false;
+    }
+  }
 
-    this._engine.on('final-caption-translated', this._onCaption);
+  _sendStartMessage() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.ws.send(
+      JSON.stringify({
+        stream_id: this.streamId,
+        text: '',
+        text_end: false
+      })
+    );
+
+    this._streamStarted = true;
   }
 
   async stop() {

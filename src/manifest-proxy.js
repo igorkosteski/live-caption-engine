@@ -25,13 +25,28 @@ function rewriteManifestUris(manifestText, publicOriginUrl) {
     .join('\n');
 }
 
-function patchMasterManifest({ upstreamText, subtitleLines, publicOriginUrl }) {
+function patchMasterManifest({ upstreamText, subtitleLines, audioLines = [], publicOriginUrl }) {
   let patched = rewriteManifestUris(upstreamText, publicOriginUrl);
+  const hasAudioGroup = audioLines.length > 0;
+
+  if (hasAudioGroup) {
+    patched = patched.replace(/^#EXT-X-STREAM-INF:(.+)$/gm, (_line, attrs) => {
+      if (/\bAUDIO=/.test(attrs)) {
+        return `#EXT-X-STREAM-INF:${attrs}`;
+      }
+
+      return `#EXT-X-STREAM-INF:${attrs},AUDIO="dub-audio"`;
+    });
+  }
 
   if (subtitleLines.length > 0) {
     patched = patched
       .replace(/^#EXT-X-STREAM-INF:(.+)$/gm, '#EXT-X-STREAM-INF:$1,SUBTITLES="subs"')
       .replace(/^(#EXTM3U\s*)/, `$1${subtitleLines.join('\n')}\n`);
+  }
+
+  if (hasAudioGroup) {
+    patched = patched.replace(/^(#EXTM3U\s*)/, `$1${audioLines.join('\n')}\n`);
   }
 
   return patched;
