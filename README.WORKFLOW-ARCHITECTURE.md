@@ -96,6 +96,66 @@ flowchart TD
   SECRETS --> ECS_PROC
 ```
 
+### AWS Final HLS Workflow (MediaPackage v2)
+
+This is the target path when the final player master should come from MediaPackage v2 with all tracks.
+
+```mermaid
+flowchart LR
+  ENC[RTMP Encoder] --> INGEST[Ingest Service / RTMP Entry]
+
+  INGEST --> PROC[ECS Stream Processor]
+  PROC --> STT[STT Provider]
+  STT --> PROC
+  PROC --> TTS[TTS Provider]
+  TTS --> PROC
+
+  PROC --> PKG[Track Packager Service]
+
+  PKG -->|Video variants| MPIN[MediaPackage v2 Ingest Endpoint]
+  PKG -->|Original audio rendition| MPIN
+  PKG -->|Dub audio renditions en/de/fr...| MPIN
+  PKG -->|Subtitle renditions src/en/de/fr...| MPIN
+
+  MPIN --> MPOUT[MediaPackage v2 Origin Endpoint]
+  MPOUT --> CF[CloudFront]
+  CF --> PLAYER[Player Apps]
+```
+
+```mermaid
+sequenceDiagram
+  participant Encoder as RTMP Encoder
+  participant Proc as Stream Processor (ECS)
+  participant STT as STT Provider
+  participant TTS as TTS Provider
+  participant Pkg as Track Packager
+  participant MP as MediaPackage v2
+  participant Player as HLS Player
+
+  Encoder->>Proc: Publish live RTMP
+  Proc->>STT: Audio chunks for transcription/translation
+  STT-->>Proc: Source + translated text
+  Proc->>TTS: Per-language text cues
+  TTS-->>Proc: Dubbed audio PCM per language
+
+  Proc->>Pkg: Video + original audio + dubbed audio + subtitles
+  Pkg->>MP: Unified live HLS ingest (all track groups)
+  MP-->>Player: Final HLS master with all tracks
+```
+
+#### Track Assembly Target (single final presentation)
+
+- Video group:
+  - 1080p, 720p, 480p (example variants)
+- Audio group:
+  - `Original` (default)
+  - `Dub en`, `Dub de`, `Dub fr` (example)
+- Subtitle group:
+  - `Source`
+  - `en`, `de`, `fr` (example)
+
+The key design point is that MediaPackage receives one coherent live presentation containing all track groups, and then publishes one final player-facing master manifest.
+
 ## 4. Scaling and Limits Strategy
 
 - There is no strict language count in code, but practical limits come from:
