@@ -333,6 +333,7 @@ export class LiveCaptionStack extends cdk.Stack {
       allowAllOutbound: true   // Needs to reach Soniox/Gemini WS + MediaPackage.
     });
     serviceSg.addIngressRule(albSg, ec2.Port.tcp(8080), 'ALB to container');
+    serviceSg.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.tcp(8080), 'NLB health checks to container');
     serviceSg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(1935), 'RTMP push from encoder via NLB');
 
     // ── ALB ───────────────────────────────────────────────────────────────────
@@ -383,11 +384,16 @@ export class LiveCaptionStack extends cdk.Stack {
       protocol: elbv2.Protocol.TCP,
       targetType: elbv2.TargetType.IP,
       healthCheck: {
-        protocol: elbv2.Protocol.TCP,
-        port: '1935',
+        // Use the HTTP health endpoint instead of a raw TCP probe on 1935.
+        // A TCP probe on port 1935 creates spurious NMS session open/close log noise
+        // because NodeMediaServer treats every incoming TCP connection as an RTMP session.
+        protocol: elbv2.Protocol.HTTP,
+        port: '8080',
+        path: '/healthz',
+        healthyHttpCodes: '200',
         healthyThresholdCount: 2,
         unhealthyThresholdCount: 2,
-        interval: cdk.Duration.seconds(10)
+        interval: cdk.Duration.seconds(30)
       },
       deregistrationDelay: cdk.Duration.seconds(10)
     });
@@ -414,8 +420,14 @@ export class LiveCaptionStack extends cdk.Stack {
       maxHealthyPercent: 200
     });
 
-    this.service.attachToApplicationTargetGroup(targetGroup);
-    this.service.attachToNetworkTargetGroup(rtmpTargetGroup);
+    targetGroup.addTarget(this.service.loadBalancerTarget({
+      containerName: 'live-caption-engine',
+      containerPort: 8080
+    }));
+    rtmpTargetGroup.addTarget(this.service.loadBalancerTarget({
+      containerName: 'live-caption-engine',
+      containerPort: 1935
+    }));
 
     // ── Auto-scaling ───────────────────────────────────────────────────────────
     const scaling = this.service.autoScaleTaskCount({
