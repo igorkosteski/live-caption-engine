@@ -169,9 +169,16 @@ export class MediaStack extends cdk.Stack {
 
     // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
     // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
+    // An InputSecurityGroup is required for RTMP_PUSH inputs; allow all IPv4 (ECS NAT outbound IP
+    // is dynamic, and the relay runs inside the same AWS network — restrict further if needed).
+    const rtmpInputSecurityGroup = new medialive.CfnInputSecurityGroup(this, 'RtmpInputSecurityGroup', {
+      whitelistRules: [{ cidr: '0.0.0.0/0' }]
+    });
+
     const rtmpInput = new medialive.CfnInput(this, 'RtmpInput', {
       name: 'live-caption-rtmp',
       type: 'RTMP_PUSH',
+      inputSecurityGroups: [rtmpInputSecurityGroup.ref],
       destinations: [{
         streamName: 'live/primary'
       }]
