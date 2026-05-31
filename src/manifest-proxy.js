@@ -16,7 +16,21 @@ function rewriteManifestUris(manifestText, publicOriginUrl) {
     .map((line) => {
       const trimmed = line.trim();
 
-      if (!trimmed || trimmed.startsWith('#') || isAbsoluteUrl(trimmed)) {
+      if (!trimmed) {
+        return line;
+      }
+
+      // Rewrite tag attribute URIs, e.g. #EXT-X-MEDIA:...URI="index_2.m3u8".
+      if (trimmed.startsWith('#')) {
+        return line.replace(/URI="([^"]+)"/g, (_match, uriValue) => {
+          if (isAbsoluteUrl(uriValue)) {
+            return `URI="${uriValue}"`;
+          }
+          return `URI="${new URL(uriValue, baseUrl).toString()}"`;
+        });
+      }
+
+      if (isAbsoluteUrl(trimmed)) {
         return line;
       }
 
