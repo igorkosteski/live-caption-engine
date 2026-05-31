@@ -27,13 +27,14 @@ class SegmentAssembler extends EventEmitter {
    * @param {number}   [opts.pollIntervalMs]        How often to poll raw channel playlist (default 2000)
    * @param {number}   [opts.segmentDurationSec]   Expected segment duration — used for master manifest (default 6)
    */
-  constructor({ rawEgressBaseUrl, pusher, logger, pollIntervalMs = 2000, segmentDurationSec = 6 }) {
+  constructor({ rawEgressBaseUrl, pusher, logger, pollIntervalMs = 2000, segmentDurationSec = 6, outputDelaySegments = 2 }) {
     super();
     this.rawEgressBaseUrl = rawEgressBaseUrl.replace(/\/$/, '');
     this.pusher = pusher;
     this.logger = logger;
     this.pollIntervalMs = pollIntervalMs;
     this.segmentDurationSec = segmentDurationSec;
+    this.outputDelaySegments = Math.max(0, outputDelaySegments);
 
     // Track which video segments we have already forwarded
     this._seenVideoSegments = new Set();
@@ -350,8 +351,11 @@ class SegmentAssembler extends EventEmitter {
   async _pushVideoPlaylist() {
     const windowSize = 9;
     const total = this._videoSegments.length;
-    const firstSeq = Math.max(0, total - windowSize);
-    const window = this._videoSegments.slice(firstSeq);
+    const delayedTotal = Math.max(0, total - this.outputDelaySegments);
+    const firstSeq = Math.max(0, delayedTotal - windowSize);
+    const window = this._videoSegments.slice(firstSeq, delayedTotal);
+
+    if (window.length === 0) return;
 
     const lines = [
       '#EXTM3U',
@@ -390,12 +394,16 @@ class SegmentAssembler extends EventEmitter {
       );
     }
 
-    // Video stream — add a no-subs variant first for broader player compatibility.
-    // Some clients fail hard when subtitles are auto-selected by default.
+    // Video stream — add a plain video-only fallback first for strict players.
+    // Some clients fail when the first variant references alternate AUDIO/SUBTITLES groups.
     const audioAttr = this._audioLangs.size > 0 ? ',AUDIO="dub-audio"' : '';
     const subsAttr  = this._captionLangs.size > 0 ? ',SUBTITLES="subs"' : '';
-    lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}`);
+    lines.push('#EXT-X-STREAM-INF:BANDWIDTH=4000000');
     lines.push('index_1.m3u8');
+    if (audioAttr) {
+      lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}`);
+      lines.push('index_1.m3u8');
+    }
     if (subsAttr) {
       lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}${subsAttr}`);
       lines.push('index_1.m3u8');

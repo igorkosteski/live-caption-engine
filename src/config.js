@@ -61,7 +61,9 @@ function buildConfig() {
       // Leave empty to keep the current proxy-only workflow.
       outputIngestUrl: (process.env.MEDIAPACKAGE_OUTPUT_INGEST_URL || '').replace(/\/+$/, ''),
       // Egress URL of the output channel — used in session endpoints response.
-      outputOriginUrl: (process.env.MEDIAPACKAGE_OUTPUT_ORIGIN_URL || '').replace(/\/+$/, '')
+      outputOriginUrl: (process.env.MEDIAPACKAGE_OUTPUT_ORIGIN_URL || '').replace(/\/+$/, ''),
+      // Hold back this many newest segments from output playlists to improve player stability at live edge.
+      outputDelaySegments: toInt(process.env.MEDIAPACKAGE_OUTPUT_DELAY_SEGMENTS, 2)
     },
     dubbing: {
       enabled: toBool(process.env.DUBBING_ENABLED, false),

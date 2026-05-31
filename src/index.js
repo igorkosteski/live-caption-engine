@@ -139,9 +139,16 @@ async function main() {
         pusher,
         logger,
         pollIntervalMs: 2000,
-        segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000))
+        segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000)),
+        outputDelaySegments: config.mediapackage.outputDelaySegments
       });
-      logger.info({ outputIngestUrl: config.mediapackage.outputIngestUrl }, 'SegmentAssembler enabled — tracks will be pushed to MPv2 output channel');
+      logger.info(
+        {
+          outputIngestUrl: config.mediapackage.outputIngestUrl,
+          outputDelaySegments: config.mediapackage.outputDelaySegments
+        },
+        'SegmentAssembler enabled — tracks will be pushed to MPv2 output channel'
+      );
     }
 
     // ── Captions ────────────────────────────────────────────────────────────
