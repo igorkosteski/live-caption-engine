@@ -24,10 +24,11 @@ class MediaPackageIngestPusher {
     const cleanUrl = ingestBaseUrl.replace(/\/$/, '');
     this.ingestBaseUrl = cleanUrl; // kept for logging
     // The MPv2 ingest URL ends with the manifest name (e.g. .../main/index).
-    // All PUT operations go to the parent directory (.../main/{filename}).
-    // The primary manifest is PUT as {manifestName}.m3u8 in that same directory.
-    this.ingestDirUrl = cleanUrl.replace(/\/[^\/]+$/, '');     // .../main
-    this.manifestFilename = cleanUrl.split('/').pop() + '.m3u8'; // index.m3u8
+    // Primary manifest must be PUT to that exact URL.
+    // Referenced assets are PUT under that manifest prefix:
+    //   .../main/index/<filename>
+    this.ingestManifestUrl = cleanUrl; // .../main/index
+    this.ingestAssetPrefixUrl = cleanUrl; // .../main/index
     this.region = region || process.env.AWS_REGION || 'us-east-1';
     this.logger = logger;
     this.maxRetries = maxRetries;
@@ -36,7 +37,14 @@ class MediaPackageIngestPusher {
     this._signer = null;
     this._credentials = null;
 
-    this.logger.info({ ingestDirUrl: this.ingestDirUrl, manifestFilename: this.manifestFilename, region: this.region }, '[pusher] initialised');
+    this.logger.info(
+      {
+        ingestManifestUrl: this.ingestManifestUrl,
+        ingestAssetPrefixUrl: this.ingestAssetPrefixUrl,
+        region: this.region
+      },
+      '[pusher] initialised'
+    );
   }
 
   async _getSigner() {
@@ -66,13 +74,13 @@ class MediaPackageIngestPusher {
    * @param {string}          contentType MIME type
    */
   async put(trackName, filename, data, contentType) {
-    // All files go to the parent directory of the manifest name.
-    // Empty trackName+filename means primary manifest (e.g. index.m3u8).
+    // Empty trackName+filename means primary manifest at the exact ingest URL.
+    // All other files are placed under the ingest manifest prefix.
     const url = trackName
-      ? `${this.ingestDirUrl}/${trackName}/${filename}`
+      ? `${this.ingestAssetPrefixUrl}/${trackName}/${filename}`
       : filename
-        ? `${this.ingestDirUrl}/${filename}`
-        : `${this.ingestDirUrl}/${this.manifestFilename}`;
+        ? `${this.ingestAssetPrefixUrl}/${filename}`
+        : this.ingestManifestUrl;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
 
     this.logger.debug({ url, bytes: body.length, contentType }, '[pusher] PUT start');
