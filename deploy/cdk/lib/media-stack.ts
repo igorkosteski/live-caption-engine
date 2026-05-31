@@ -122,9 +122,7 @@ export class MediaStack extends cdk.Stack {
         Statement: [{
           Sid: 'AllowAnonymousGetObject',
           Effect: 'Allow',
-          Principal: {
-            AWS: '*'
-          },
+          Principal: '*',
           Action: ['mediapackagev2:GetObject'],
           Resource: originEndpoint.attrArn
         }]
@@ -177,7 +175,7 @@ export class MediaStack extends cdk.Stack {
         Statement: [{
           Sid: 'AllowAnonymousGetObject',
           Effect: 'Allow',
-          Principal: { AWS: '*' },
+          Principal: '*',
           Action: ['mediapackagev2:GetObject'],
           Resource: outputOriginEndpoint.attrArn
         }]
@@ -231,23 +229,9 @@ export class MediaStack extends cdk.Stack {
     });
     channelPolicy.addDependency(mpChannel);
 
-    const outputChannelPolicy = new mediapackagev2.CfnChannelPolicy(this, 'OutputChannelPolicy', {
-      channelGroupName: OUTPUT_GROUP_NAME,
-      channelName: OUTPUT_CHANNEL_NAME,
-      policy: {
-        Version: '2012-10-17',
-        Statement: [{
-          Sid: 'AllowEcsTaskPutObject',
-          Effect: 'Allow',
-          Principal: {
-            AWS: `arn:aws:iam::${this.account}:role/live-caption-engine-task-role`
-          },
-          Action: 'mediapackagev2:PutObject',
-          Resource: outputMpChannel.attrArn
-        }]
-      }
-    });
-    outputChannelPolicy.addDependency(outputMpChannel);
+    // OutputChannelPolicy omitted: the ECS task role already has mediapackagev2:PutObject
+    // via its identity policy (see live-caption-stack.ts), so a redundant channel policy
+    // is not needed for same-account access and was causing MediaPackage V2 validation errors.
 
     // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
     // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
