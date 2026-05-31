@@ -67,6 +67,11 @@ class SegmentAssembler extends EventEmitter {
     if (this._running) return;
     this._running = true;
     this.logger.info({ rawEgressBaseUrl: this.rawEgressBaseUrl }, '[assembler] starting');
+    // Push master manifest once now so players can discover the stream immediately.
+    // It will be re-pushed only if registerCaptionLang/registerAudioLang is called later.
+    this._pushMasterManifest().catch(err =>
+      this.logger.warn({ err }, '[assembler] initial master manifest push failed')
+    );
     this._schedulePoll();
   }
 
@@ -86,6 +91,11 @@ class SegmentAssembler extends EventEmitter {
   registerCaptionLang(lang) {
     this._captionLangs.add(lang);
     if (!this._pendingCaptions.has(lang)) this._pendingCaptions.set(lang, []);
+    if (this._running) {
+      this._pushMasterManifest().catch(err =>
+        this.logger.warn({ err, lang }, '[assembler] master manifest re-push failed after registerCaptionLang')
+      );
+    }
   }
 
   /**
@@ -94,6 +104,11 @@ class SegmentAssembler extends EventEmitter {
   registerAudioLang(lang) {
     this._audioLangs.add(lang);
     if (!this._pendingAudio.has(lang)) this._pendingAudio.set(lang, []);
+    if (this._running) {
+      this._pushMasterManifest().catch(err =>
+        this.logger.warn({ err, lang }, '[assembler] master manifest re-push failed after registerAudioLang')
+      );
+    }
   }
 
   /**
@@ -211,10 +226,13 @@ class SegmentAssembler extends EventEmitter {
     // MPv2 requires flat path structure — no subdirectories.
     // Video segments keep their original name (seg_1_xxx.ts — unique by sequence).
     // Audio/caption segments are prefixed with the track name to avoid collisions.
+    // All segment PUTs are fired in parallel — they are independent of each other.
+    const puts = [];
+
     for (const [lang, items] of this._pendingCaptions) {
       for (const item of items) {
         const flatFilename = `captions-${lang}-${item.filename}`;
-        await this.pusher.put('', flatFilename, item.data, item.contentType);
+        puts.push(this.pusher.put('', flatFilename, item.data, item.contentType));
       }
       this._pendingCaptions.set(lang, []);
     }
@@ -222,19 +240,25 @@ class SegmentAssembler extends EventEmitter {
     for (const [lang, items] of this._pendingAudio) {
       for (const item of items) {
         const flatFilename = `audio-${lang}-${item.filename}`;
-        await this.pusher.put('', flatFilename, item.data, item.contentType);
+        puts.push(this.pusher.put('', flatFilename, item.data, item.contentType));
       }
       this._pendingAudio.set(lang, []);
     }
+
+    await Promise.all(puts);
   }
 
   async _pushPlaylists() {
     // Caption playlists: regenerate with flat segment URIs (original from LiveWebVtt
     // has absolute /captions/... paths pointing at the Node.js server — unusable here).
+    // Audio, caption, and video variant playlists are all independent — fire in parallel.
+    // Master manifest is NOT pushed here; it is pushed once at start() and on track changes.
+    const puts = [];
+
     for (const [lang, playlist] of this._captionPlaylists) {
       if (playlist) {
         const flat = this._rewriteCaptionPlaylist(lang, playlist);
-        await this.pusher.put('', `captions-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl');
+        puts.push(this.pusher.put('', `captions-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl'));
       }
     }
 
@@ -242,15 +266,14 @@ class SegmentAssembler extends EventEmitter {
     for (const [lang, playlist] of this._audioPlaylists) {
       if (playlist) {
         const flat = this._rewriteAudioPlaylist(lang, playlist);
-        await this.pusher.put('', `audio-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl');
+        puts.push(this.pusher.put('', `audio-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl'));
       }
     }
 
-    // Video variant playlist
-    await this._pushVideoPlaylist();
+    // Video variant playlist — parallel with track playlists (segments already up)
+    puts.push(this._pushVideoPlaylist());
 
-    // Primary master manifest
-    await this._pushMasterManifest();
+    await Promise.all(puts);
   }
 
   /**

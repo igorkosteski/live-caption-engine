@@ -78,7 +78,8 @@ class MediaPackageIngestPusher {
           throw err;
         }
         this.logger.warn({ err, trackName, filename, attempt }, 'MediaPackage ingest PUT failed, retrying');
-        await new Promise(r => setTimeout(r, 200 * attempt));
+        const delay = Math.min(200 * Math.pow(2, attempt - 1) + Math.random() * 100, 5000);
+        await new Promise(r => setTimeout(r, delay));
       }
     }
   }
