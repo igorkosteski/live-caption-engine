@@ -154,12 +154,26 @@ Deploy with: `npx cdk deploy --all -c channelClass=STANDARD`
 
 ---
 
-# Target Architecture — All Tracks via MediaPackage V2 Ingest
+# Target Architecture — Two MediaPackage Channels, ECS as Final Assembler
 
-ECS pushes every generated track (captions, dubbed audio) directly to MediaPackage V2
-over HTTP PUT — the same ingest endpoint MediaLive already uses for video.
-MediaPackage assembles a single complete manifest served via CloudFront.
-The ALB manifest proxy endpoint is **removed** from the player path entirely.
+MediaLive and ECS push to **separate** MediaPackage channels — they never share an ingest
+endpoint. MediaLive owns the "raw" channel (video + source audio). ECS reads video
+segments from that channel, adds captions and dubbed audio it generated, and pushes a
+fully assembled stream into a second "output" channel. The player only ever talks to the
+output channel via CloudFront.
+
+The ALB manifest proxy is **removed from the player path**.
+
+## Why two channels
+
+MediaPackage V2 expects every ingest client on a channel to agree on segment boundaries
+and sequence numbers. MediaLive controls its own clock. If ECS also pushes tracks to the
+same channel it creates a conflict — MediaPackage cannot reliably merge them.
+
+With two channels:
+- **Channel `raw`** — owned entirely by MediaLive. Clean, unmodified video+audio HLS.
+- **Channel `output`** — owned entirely by ECS. Video segments re-forwarded from `raw`,
+  plus all caption and dubbed audio renditions. This is the player-facing origin.
 
 ## Diagram
 
@@ -177,12 +191,15 @@ flowchart TD
             RELAY[ffmpeg relay → MediaLive RTMP_PUSH]
             CAPTIONS[LiveWebVtt\ngenerate .vtt segments]
             DUBBING[AudioHlsPublisher\ngenerate .aac/.ts segments]
-            PUSHER[MediaPackageIngestPusher\nHTTP PUT segments → MPv2 ingest]
+            ASSEMBLER[SegmentAssembler\nreads video segments from raw channel\nforwards video + pushes captions + audio\nto output channel]
         end
 
-        subgraph MEDIA["Media pipeline"]
-            ML[MediaLive\nRTMP_PUSH input]
-            MP[MediaPackage V2\nmulti-track ingest\nvideo + audio renditions + WebVTT]
+        subgraph RAW["MediaPackage V2 — channel: raw (internal)"]
+            MP_RAW[MediaPackage raw\nvideo + source audio only\nnot player-facing]
+        end
+
+        subgraph OUTPUT["MediaPackage V2 — channel: output (player-facing)"]
+            MP_OUT[MediaPackage output\nvideo + all audio renditions\n+ all subtitle tracks]
             CF[CloudFront\nHTTPS CDN]
         end
     end
@@ -197,88 +214,69 @@ flowchart TD
     SESSION -->|reads audio via loopback| NMS
 
     SESSION -->|audio PCM| RELAY
-    RELAY -->|RTMP push| ML
+    RELAY -->|RTMP push| ML[MediaLive\nRTMP_PUSH input]
 
     SESSION -->|final-caption events| CAPTIONS
     SESSION -->|audio PCM| DUBBING
 
-    CAPTIONS -->|.vtt segments + playlist| PUSHER
-    DUBBING -->|.aac segments + playlist| PUSHER
+    ML -->|HLS video + source audio| MP_RAW
 
-    PUSHER -->|PUT /in/v1/.../captions-{lang}/seg-N.vtt| MP
-    PUSHER -->|PUT /in/v1/.../dub-{lang}/seg-N.aac| MP
+    ASSEMBLER -->|polls raw channel segments| MP_RAW
+    CAPTIONS -->|.vtt segments| ASSEMBLER
+    DUBBING -->|.aac/.ts segments| ASSEMBLER
 
-    ML -->|HLS segments\nvideo + source audio| MP
+    ASSEMBLER -->|PUT video segments re-forwarded| MP_OUT
+    ASSEMBLER -->|PUT caption segments + playlists| MP_OUT
+    ASSEMBLER -->|PUT dubbed audio segments + playlists| MP_OUT
 
-    MP -->|assembles complete master manifest\nvideo + all audio renditions + subtitles| CF
-    CF -->|single HLS master\nno proxy hop| PLAYER
+    MP_OUT -->|complete HLS master\nvideo + audio renditions + subtitles| CF
+    CF -->|single origin, no proxy hop| PLAYER
 ```
 
-## Ingest path layout
+## Ingest path layout — output channel
 
-Each track type gets its own named ingest sub-path inside the MediaPackage channel:
-
-| Track | PUT path pattern |
+| Track | Ingest sub-path |
 |---|---|
-| Video + source audio | `index` (pushed by MediaLive — unchanged) |
+| Video (forwarded from raw) | `video` |
 | Source captions (WebVTT) | `captions-src` |
-| Translated captions — e.g. `en` | `captions-en` |
-| Original audio rendition (AAC HLS) | `dub-src` |
-| Dubbed audio — e.g. `en` | `dub-en` |
-
-Full ingest base URL (current account):
-```
-https://p01vso-1.ingest.ahg76l.mediapackagev2.eu-central-1.amazonaws.com/in/v1/live-caption/1/main/<track-name>/
-```
-
-## Segment timing alignment requirement
-
-This is the key constraint that does not exist in the current proxy approach:
-
-- Audio TS segments pushed to MediaPackage **must share segment boundaries** with the
-  MediaLive video segments (same `EXT-X-TARGETDURATION`, same `EXT-X-MEDIA-SEQUENCE` numbering).
-- `AudioHlsPublisher` needs to be driven by MediaLive segment clock, not by its own
-  FFmpeg internal clock. Concretely: segment cuts happen when MediaLive cuts them, so
-  FFmpeg must use `-segment_time` aligned to `CAPTIONS_SEGMENT_DURATION_MS` (currently 6 s)
-  and the sequence counter must match.
-- WebVTT is self-timestamped (cue start/end) so it is tolerant of minor sequence skew,
-  but segment file intervals should still match.
+| Translated captions e.g. `en` | `captions-en` |
+| Original audio rendition (AAC) | `dub-src` |
+| Dubbed audio e.g. `en` | `dub-en` |
 
 ## What changes in code
 
 | Component | Current | Target |
 |---|---|---|
-| `AudioHlsPublisher` | writes segments to local `/tmp`, serves via Express | additionally PUT each segment + playlist to MPv2 ingest after writing |
-| `LiveWebVtt` | serves `.vtt` segments via Express routes | additionally PUT each segment + playlist to MPv2 ingest |
-| `src/index.js` | starts manifest proxy route | manifest proxy route removed or kept as fallback only |
-| `manifest-proxy.js` | patches MP master manifest on every player request | no longer in the player hot path |
-| New: `MediaPackageIngestPusher` | — | thin HTTP client that PUTs a file path or buffer to a given MPv2 ingest URL, with retry |
+| `AudioHlsPublisher` | writes segments to `/tmp`, serves via Express | hands each segment to `SegmentAssembler` for push to output channel |
+| `LiveWebVtt` | serves `.vtt` segments via Express routes | hands each segment to `SegmentAssembler` |
+| New: `SegmentAssembler` | — | polls raw MP channel for new video segments, coordinates push of all track types to output channel with matching sequence numbers |
+| `manifest-proxy.js` | patches MP master manifest per request | removed from player path; kept optionally for local dev fallback |
+| `src/index.js` | starts manifest proxy route | starts `SegmentAssembler` per session instead |
 
 ## What changes in CDK / infra
 
-- MediaPackage V2 `OriginEndpoint` needs `hlsManifests` configured with WebVTT subtitle
-  rendition group and audio rendition group declarations matching the ingest track names.
-- ECS task role already has `mediapackagev2:PutObject` — no IAM change needed.
-- `MEDIAPACKAGE_INGEST_URL` already injected into the container — no env change needed.
-- ALB listener on port 80 can stay for the session API; manifest proxy route optional.
-- CloudFront distribution in front of MediaPackage egress should be enabled so
-  the player URL is stable and CDN-cached.
+| Resource | Change |
+|---|---|
+| MediaStack | add second `CfnChannel` + `CfnOriginEndpoint` for `output` channel |
+| MediaStack outputs | add `MediaPackageOutputIngestUrl`, `MediaPackageOutputEgressUrl` |
+| LiveCaptionStack env | `MEDIAPACKAGE_OUTPUT_INGEST_URL` injected alongside existing `MEDIAPACKAGE_INGEST_URL` |
+| CloudFront | enable in front of output channel egress (`output` is player-facing) |
+| IAM | ECS task role already has `mediapackagev2:PutObject` — no change needed |
 
 ## What stays the same
 
 - RTMP ingest flow (NLB → NMS → auto-session → relay → MediaLive) — no change
 - Transcription and dubbing engine pipeline — no change
 - Session lifecycle API (`POST /sessions`, `DELETE /sessions/:id`) — no change
-- `MEDIALIVE_INPUT_ID` DescribeInput startup resolution — no change
 
 ## Comparison
 
-| | Current (proxy) | Target (direct ingest) |
+| | Current (proxy) | Target (two channels) |
 |---|---|---|
-| Player origin | ALB (manifest) + MediaPackage (video) | CloudFront only |
-| Track latency to player | real-time from ECS memory | one segment delay (push → MPv2 → CDN) |
-| ECS restart impact | live captions/audio drop immediately | already-pushed segments remain in MPv2 |
-| Segment alignment | not required (manifest stitching) | required for audio; tolerant for WebVTT |
-| CloudFront needed | optional | recommended (stable URL + caching) |
-| ALB in player path | yes (every segment request) | no (API only) |
-| Engineering lift | done | `MediaPackageIngestPusher` + alignment logic |
+| Player origin | ALB (proxy) + MediaPackage (video) | CloudFront → output channel only |
+| MediaLive and ECS share ingest | n/a (ECS never writes to MP) | No — separate channels, no conflict |
+| Segment alignment | not required | ECS drives from raw channel segment clock — natural alignment |
+| ECS restart impact | captions/audio drop immediately | already-pushed segments remain in MP output |
+| CloudFront | optional | required (output channel is player-facing) |
+| ALB in player path | yes (every segment) | no (session API only) |
+| Engineering lift | done | `SegmentAssembler` + second MP channel in CDK |
