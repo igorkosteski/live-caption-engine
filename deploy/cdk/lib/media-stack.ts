@@ -69,6 +69,9 @@ export class MediaStack extends cdk.Stack {
    */
   public readonly mediaPackageOriginUrl: string;
 
+  /** Primary MediaPackage V2 ingest URL for track publishing. */
+  public readonly mediaPackageIngestUrl: string;
+
   /** nginx-rtmp input URL used by MediaLive RTMP_PULL input. */
   public readonly nginxRtmpTapUrl?: string;
 
@@ -485,6 +488,7 @@ export class MediaStack extends cdk.Stack {
     // Derive egress origin URL from the first ingest endpoint URL.
     // Ingest format: https://<group>-1.ingest.<stageId>.mediapackagev2.<region>.amazonaws.com/in/v1/...
     const ingestUrl0 = cdk.Fn.select(0, mpChannel.attrIngestEndpointUrls);
+    this.mediaPackageIngestUrl = ingestUrl0;
     const stageId = cdk.Fn.select(0, cdk.Fn.split('.mediapackagev2.', cdk.Fn.select(1, cdk.Fn.split('.ingest.', ingestUrl0))));
     this.mediaPackageOriginUrl = cdk.Fn.join('', [
       `https://${GROUP_NAME}.egress.`, stageId,
@@ -505,6 +509,11 @@ export class MediaStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'MediaPackageOriginUrl', {
       value: this.mediaPackageOriginUrl,
       description: 'MediaPackage V2 egress origin base URL — used by the manifest proxy endpoint'
+    });
+
+    new cdk.CfnOutput(this, 'MediaPackageIngestUrl', {
+      value: this.mediaPackageIngestUrl,
+      description: 'MediaPackage V2 primary ingest URL — use for direct track publishing workflow'
     });
 
     new cdk.CfnOutput(this, 'MediaLiveChannelId', {

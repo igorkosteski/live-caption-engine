@@ -50,8 +50,12 @@ const liveCaptionStack = new LiveCaptionStack(app, 'LiveCaptionEngine', {
   env,
   engine,
   defaultRtmpUrl: mediaStack.nginxRtmpTapUrl,
-  // Manifest proxy fetches the MPv2 egress master manifest and injects subtitle tracks.
+  // MPv2 egress used by manifest proxy and player-facing master flow.
   mediapackageOriginUrl: mediaStack.mediaPackageOriginUrl,
+  // Internal fetch path in ECS (same value by default, but explicit for workflow clarity).
+  mediapackageOriginInternalUrl: mediaStack.mediaPackageOriginUrl,
+  // MPv2 ingest path for direct track publishing workflow.
+  mediapackageIngestUrl: mediaStack.mediaPackageIngestUrl,
   dubbingPollyEnabled,
   desiredCount:    1,
   minCapacity:     1,

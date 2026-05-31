@@ -6,17 +6,18 @@ AWS CDK v2 (TypeScript) that provisions the full live captioning pipeline:
 Encoder (OBS/FFMPEG)
   │  RTMP push
   ▼
-AWS MediaLive  ──── HLS segments ────►  AWS MediaPackage V2  ──── CloudFront ────►  Viewers
-                                               ▲
-                         live-caption-engine (ECS Fargate)
-                         pushes .vtt subtitles + .aac dubbed audio
+nginx-rtmp relay (EC2)
+  ├──── RTMP_PULL ────► AWS MediaLive ──── HLS segments ────► AWS MediaPackage V2
+  └──── RTMP pull ────► live-caption-engine (ECS Fargate + ALB)
+                          └── Session API + manifest patch endpoint
 ```
 
 ## Stacks
 
 | Stack | Description |
 |---|---|
-| `LiveCaptionMedia` | MediaLive channel + MediaPackage V2 channel group + CloudFront distribution |
+| `LiveCaptionNginxRtmp` | EC2 nginx-rtmp relay with stable EIP |
+| `LiveCaptionMedia` | MediaLive channel + MediaPackage V2 channel group |
 | `LiveCaptionEngine` | ECR repo + ECS Fargate service + ALB + Secrets Manager + IAM |
 
 ---
@@ -63,18 +64,21 @@ npx cdk bootstrap aws://123456789012/us-east-1
 
 ## 3. Deploy
 
-### Deploy both stacks (recommended)
+### Deploy all stacks (recommended)
 
 ```bash
 npx cdk deploy --all
 ```
 
-CDK always deploys `LiveCaptionMedia` first (the ECS stack depends on the
-MediaPackage ingest URL output from the media stack).
+CDK deploys stacks in dependency order:
+1. `LiveCaptionNginxRtmp`
+2. `LiveCaptionMedia`
+3. `LiveCaptionEngine`
 
 ### Deploy a single stack
 
 ```bash
+npx cdk deploy LiveCaptionNginxRtmp  # nginx-rtmp relay only
 npx cdk deploy LiveCaptionMedia    # media pipeline only
 npx cdk deploy LiveCaptionEngine   # ECS service only
 ```
@@ -152,9 +156,9 @@ aws ecr get-login-password --region <REGION> | \
   docker login --username AWS --password-stdin <EcrRepositoryUri from output>
 
 # Build and push from the project root
-docker build -t live-caption-engine:ecs .
-docker tag  live-caption-engine:ecs <EcrRepositoryUri>:ecs
-docker push <EcrRepositoryUri>:ecs
+docker build -t live-caption-engine:latest .
+docker tag  live-caption-engine:latest <EcrRepositoryUri>:latest
+docker push <EcrRepositoryUri>:latest
 ```
 
 After pushing, force a new ECS deployment so Fargate pulls the new image:
@@ -169,17 +173,17 @@ aws ecs update-service \
 ### 5c. Get the RTMP push URL for your encoder
 
 ```bash
-aws medialive describe-input \
-  --input-id <MediaLiveInputId from output> \
-  --query 'Destinations[*].Url' \
-  --output text
+# Use the stack output from LiveCaptionNginxRtmp:
+#   NginxRtmpUrl = rtmp://<EIP>:1935/live/primary
 ```
 
 Configure OBS (or any RTMP encoder):
 - **Server**: the URL up to and including the last `/`
-  e.g. `rtmp://...medialive.amazonaws.com:1935/live/`
+  e.g. `rtmp://<EIP>:1935/live/`
 - **Stream Key**: the part after the last `/`
   e.g. `primary`
+
+MediaLive is configured as `RTMP_PULL`, so it pulls from the nginx-rtmp relay.
 
 ### 5d. Start the MediaLive channel
 
@@ -201,12 +205,12 @@ aws medialive describe-channel \
 ### 5e. Verify playback
 
 ```bash
-# HLS master playlist URL is printed as output HlsPlaylistUrl
-# Open in VLC:
-vlc "<HlsPlaylistUrl from output>"
+# Media stack outputs MediaPackageOriginUrl (base URL).
+# Check upstream HLS master directly from MediaPackage:
+curl -s "<MediaPackageOriginUrl from output>/index.m3u8" | head -20
 
-# Or curl the manifest to confirm segments are flowing:
-curl -s "<HlsPlaylistUrl>" | head -20
+# Optional: play in VLC
+vlc "<MediaPackageOriginUrl from output>/index.m3u8"
 ```
 
 ### 5f. Start a caption session
@@ -216,11 +220,10 @@ The ECS service exposes a REST API on the ALB. Use the `AlbDnsName` output:
 ```bash
 BASE=http://<AlbDnsName from output>
 
-# Start captioning for a stream (rtmpUrl must match what the encoder is pushing)
+# Start captioning. rtmpUrl is optional when RTMP_URL is set from CDK default wiring.
 curl -s -X POST "$BASE/sessions" \
   -H "Content-Type: application/json" \
   -d '{
-    "rtmpUrl": "rtmp://...",
     "languages": ["de", "fr"],
     "dubbingLanguages": ["de"]
   }' | jq .
@@ -230,6 +233,9 @@ curl -s "$BASE/sessions" | jq .
 
 # Stop a session
 curl -s -X DELETE "$BASE/sessions/<sessionId>"
+
+# Fetch patched master manifest with subtitle/audio groups for this session
+curl -s "$BASE/sessions/<sessionId>/manifest/master.m3u8" | head -40
 ```
 
 The response from `POST /sessions` includes per-session VTT and PCM endpoints:
@@ -262,12 +268,12 @@ The response from `POST /sessions` includes per-session VTT and PCM endpoints:
 | `MediaPackageV2::ChannelGroup` | Group name `live-caption` |
 | `MediaPackageV2::Channel` | Channel `main`; two ingest endpoints for pipeline redundancy |
 | `MediaPackageV2::OriginEndpoint` | HLS, 6 s segments, 60 s manifest window, 2 h DVR startover |
-| `MediaPackageV2::OriginEndpointPolicy` | Allows CloudFront OAC `mediapackagev2:GetObject` |
-| `MediaLive::Input` | RTMP_PUSH; whitelist via `rtmpAllowedCidrs` context flag |
+| `MediaPackageV2::OriginEndpointPolicy` | Allows `mediapackagev2:GetObject` (currently open policy) |
+| `MediaLive::Input` | `RTMP_PULL` from nginx-rtmp relay |
 | `MediaLive::Channel` | H.264 720p 3 Mbps + AAC 192 kbps → HLS → MediaPackage V2 |
-| `CloudFront::OriginAccessControl` | SigV4 signed requests to MediaPackage V2 |
-| `CloudFront::Distribution` | HTTPS CDN; HTTP/2+3; Price Class 100 |
 | `IAM::Role` | MediaLive role: `mediapackagev2:PutObject` + CloudWatch logs |
+
+Note: CloudFront resources are currently commented out in `media-stack.ts`.
 
 ### LiveCaptionEngine stack
 
@@ -341,7 +347,8 @@ deploy/cdk/
 │   └── app.ts                  ← CDK app entrypoint + context flags
 ├── lib/
 │   ├── live-caption-stack.ts   ← ECS + ALB + ECR + Secrets stack
-│   └── media-stack.ts          ← MediaLive + MediaPackage V2 + CloudFront stack
+│   ├── media-stack.ts          ← MediaLive + MediaPackage V2 stack
+│   └── nginx-rtmp-stack.ts     ← nginx-rtmp EC2 relay stack
 ├── cdk.json                    ← CDK toolkit config
 ├── package.json
 ├── tsconfig.json

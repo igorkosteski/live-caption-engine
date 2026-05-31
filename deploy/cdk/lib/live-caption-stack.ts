@@ -22,6 +22,18 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
   mediapackageOriginUrl?: string;
 
   /**
+   * MediaPackage V2 origin URL used for internal fetches from within the task.
+   * If omitted, falls back to mediapackageOriginUrl.
+   */
+  mediapackageOriginInternalUrl?: string;
+
+  /**
+   * MediaPackage V2 ingest URL for direct track publishing workflow.
+   * When provided, task role receives mediapackagev2:PutObject on this endpoint ARN scope.
+   */
+  mediapackageIngestUrl?: string;
+
+  /**
    * Enable AWS Polly dubbing support (adds polly:SynthesizeSpeech to the task role).
    * @default false
    */
@@ -204,6 +216,15 @@ export class LiveCaptionStack extends cdk.Stack {
       }));
     }
 
+    if (props.mediapackageIngestUrl) {
+      // PutObject is required for direct writes to MediaPackage v2 ingest.
+      taskRole.addToPolicy(new iam.PolicyStatement({
+        sid: 'MediaPackageV2IngestPutObject',
+        actions: ['mediapackagev2:PutObject'],
+        resources: ['*']
+      }));
+    }
+
     // CloudWatch metrics / logs from the container (for custom metrics if added later).
     taskRole.addToPolicy(new iam.PolicyStatement({
       sid: 'CloudWatchLogs',
@@ -255,6 +276,15 @@ export class LiveCaptionStack extends cdk.Stack {
         CAPTIONS_WINDOW_SEGMENTS: '5',
         ...(props.mediapackageOriginUrl
           ? { MEDIAPACKAGE_ORIGIN_URL: props.mediapackageOriginUrl }
+          : {}),
+        ...(props.mediapackageOriginInternalUrl || props.mediapackageOriginUrl
+          ? {
+              MEDIAPACKAGE_ORIGIN_URL_INTERNAL:
+                props.mediapackageOriginInternalUrl ?? props.mediapackageOriginUrl!
+            }
+          : {}),
+        ...(props.mediapackageIngestUrl
+          ? { MEDIAPACKAGE_INGEST_URL: props.mediapackageIngestUrl }
           : {}),
         AWS_REGION:              this.region
       },
