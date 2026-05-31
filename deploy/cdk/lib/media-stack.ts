@@ -231,6 +231,24 @@ export class MediaStack extends cdk.Stack {
     });
     channelPolicy.addDependency(mpChannel);
 
+    const outputChannelPolicy = new mediapackagev2.CfnChannelPolicy(this, 'OutputChannelPolicy', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      channelName: OUTPUT_CHANNEL_NAME,
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{
+          Sid: 'AllowEcsTaskPutObject',
+          Effect: 'Allow',
+          Principal: {
+            AWS: `arn:aws:iam::${this.account}:role/live-caption-engine-task-role`
+          },
+          Action: 'mediapackagev2:PutObject',
+          Resource: outputMpChannel.attrArn
+        }]
+      }
+    });
+    outputChannelPolicy.addDependency(outputMpChannel);
+
     // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
     // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
     // An InputSecurityGroup is required for RTMP_PUSH inputs; allow all IPv4 (ECS NAT outbound IP
