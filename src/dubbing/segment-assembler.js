@@ -37,6 +37,8 @@ class SegmentAssembler extends EventEmitter {
 
     // Track which video segments we have already forwarded
     this._seenVideoSegments = new Set();
+    // Metadata for forwarded video segments, used to build output index_1.m3u8.
+    this._videoSegments = [];
     // Latest video media-sequence number seen
     this._videoMediaSequence = 0;
 
@@ -228,6 +230,15 @@ class SegmentAssembler extends EventEmitter {
     await this.pusher.put('', seg.filename, videoData, 'video/mp2t');
     this.logger.info({ filename: seg.filename, ms: Date.now() - t0 }, '[assembler] video segment pushed');
 
+    // Keep a small rolling timeline so the generated playlist mirrors source timing.
+    this._videoSegments.push({
+      filename: seg.filename,
+      duration: seg.duration,
+      discontinuity: !!seg.discontinuity,
+      programDateTime: seg.programDateTime || null
+    });
+    if (this._videoSegments.length > 200) this._videoSegments.shift();
+
     // Flush pending captions and audio
     await this._flushPending();
 
@@ -337,10 +348,10 @@ class SegmentAssembler extends EventEmitter {
   }
 
   async _pushVideoPlaylist() {
-    const seenArr = [...this._seenVideoSegments];
-    const windowSize = 5;
-    const window = seenArr.slice(-windowSize);
-    const firstSeq = Math.max(0, seenArr.length - windowSize);
+    const windowSize = 9;
+    const total = this._videoSegments.length;
+    const firstSeq = Math.max(0, total - windowSize);
+    const window = this._videoSegments.slice(firstSeq);
 
     const lines = [
       '#EXTM3U',
@@ -349,10 +360,10 @@ class SegmentAssembler extends EventEmitter {
       `#EXT-X-MEDIA-SEQUENCE:${firstSeq}`
     ];
 
-    for (const url of window) {
-      const filename = url.split('/').pop();
-      lines.push(`#EXTINF:${this.segmentDurationSec}.000,`);
-      lines.push(filename);  // flat — same level as index_1.m3u8
+    // Keep output variant minimal and MPv2-friendly.
+    for (const seg of window) {
+      lines.push(`#EXTINF:${Number(this.segmentDurationSec).toFixed(3)},`);
+      lines.push(seg.filename);  // flat — same level as index_1.m3u8
     }
 
     // MPv2 convention: video variant playlist is named index_1.m3u8 (matches MediaLive output)
@@ -373,18 +384,22 @@ class SegmentAssembler extends EventEmitter {
 
     // Subtitle renditions — flat URIs
     for (const lang of this._captionLangs) {
-      const isDefault = lang === 'src';
       const name = lang === 'src' ? 'Source' : lang;
       lines.push(
-        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=${isDefault ? 'YES' : 'NO'},URI="captions-${lang}.m3u8"`
+        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="${lang}",NAME="${name}",DEFAULT=NO,AUTOSELECT=NO,URI="captions-${lang}.m3u8"`
       );
     }
 
-    // Video stream — variant playlist at root level (index_1.m3u8, matching MediaLive convention)
+    // Video stream — add a no-subs variant first for broader player compatibility.
+    // Some clients fail hard when subtitles are auto-selected by default.
     const audioAttr = this._audioLangs.size > 0 ? ',AUDIO="dub-audio"' : '';
     const subsAttr  = this._captionLangs.size > 0 ? ',SUBTITLES="subs"' : '';
-    lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}${subsAttr}`);
+    lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}`);
     lines.push('index_1.m3u8');
+    if (subsAttr) {
+      lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}${subsAttr}`);
+      lines.push('index_1.m3u8');
+    }
 
     // PUT to the bare ingest base URL — this IS the primary manifest endpoint.
     // Child playlists and segments go to {ingestBaseUrl}/{filename}.
@@ -442,16 +457,38 @@ class SegmentAssembler extends EventEmitter {
     let mediaSequence = 0;
     const segments = [];
     const base = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+    let pendingDuration = this.segmentDurationSec;
+    let pendingDiscontinuity = false;
+    let pendingProgramDateTime = null;
 
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
         mediaSequence = parseInt(lines[i].split(':')[1], 10);
       }
+      if (lines[i].startsWith('#EXT-X-DISCONTINUITY')) {
+        pendingDiscontinuity = true;
+      }
+      if (lines[i].startsWith('#EXT-X-PROGRAM-DATE-TIME:')) {
+        pendingProgramDateTime = lines[i].split(':').slice(1).join(':');
+      }
+      if (lines[i].startsWith('#EXTINF')) {
+        const parsed = parseFloat(lines[i].split(':')[1]);
+        if (!Number.isNaN(parsed)) pendingDuration = parsed;
+      }
       if (lines[i].startsWith('#EXTINF') && lines[i + 1] && !lines[i + 1].startsWith('#')) {
         const segLine = lines[i + 1];
         const url = segLine.startsWith('http') ? segLine : `${base}${segLine.replace(/^\//, '')}`;
         const filename = segLine.split('/').pop().split('?')[0];
-        segments.push({ url, filename });
+        segments.push({
+          url,
+          filename,
+          duration: pendingDuration,
+          discontinuity: pendingDiscontinuity,
+          programDateTime: pendingProgramDateTime
+        });
+        pendingDuration = this.segmentDurationSec;
+        pendingDiscontinuity = false;
+        pendingProgramDateTime = null;
       }
     }
 
