@@ -291,6 +291,8 @@ export class LiveCaptionStack extends cdk.Stack {
         CAPTIONS_ENABLED:        'true',
         CAPTIONS_SEGMENT_DURATION_MS: '6000',
         CAPTIONS_WINDOW_SEGMENTS: '5',
+        DUBBING_ENABLED:         'false',
+        DUBBING_ENGINE:          'soniox',
         ...(props.mediapackageOriginUrl
           ? { MEDIAPACKAGE_ORIGIN_URL: props.mediapackageOriginUrl }
           : {}),
