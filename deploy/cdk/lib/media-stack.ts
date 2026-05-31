@@ -229,9 +229,26 @@ export class MediaStack extends cdk.Stack {
     });
     channelPolicy.addDependency(mpChannel);
 
-    // OutputChannelPolicy omitted: the ECS task role already has mediapackagev2:PutObject
-    // via its identity policy (see live-caption-stack.ts), so a redundant channel policy
-    // is not needed for same-account access and was causing MediaPackage V2 validation errors.
+    // Explicitly allow the ECS task role to write to the OUTPUT channel.
+    // Keep this resource policy scoped to the exact role instead of wildcard principal.
+    const ecsTaskRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${cdk.Aws.ACCOUNT_ID}:role/live-caption-engine-task-role`;
+    const outputChannelPolicy = new mediapackagev2.CfnChannelPolicy(this, 'OutputChannelPolicy', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      channelName: OUTPUT_CHANNEL_NAME,
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{
+          Sid: 'AllowEcsTaskPutObject',
+          Effect: 'Allow',
+          Principal: {
+            AWS: ecsTaskRoleArn
+          },
+          Action: 'mediapackagev2:PutObject',
+          Resource: outputMpChannel.attrArn
+        }]
+      }
+    });
+    outputChannelPolicy.addDependency(outputMpChannel);
 
     // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
     // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
