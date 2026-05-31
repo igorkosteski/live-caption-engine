@@ -382,7 +382,7 @@ async function main() {
         ? `/sessions/${sessionId}/manifest/master.m3u8`
         : null,
       outputManifest: config.mediapackage.outputOriginUrl
-        ? `${config.mediapackage.outputOriginUrl}/master.m3u8`
+        ? `${config.mediapackage.outputOriginUrl}/index.m3u8`
         : null
     };
 
