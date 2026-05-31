@@ -45,6 +45,12 @@ export class MediaStack extends cdk.Stack {
   /** Primary MediaPackage V2 ingest URL for track publishing. */
   public readonly mediaPackageIngestUrl: string;
 
+  /** Ingest URL for the output (player-facing) MediaPackage V2 channel. */
+  public readonly mediaPackageOutputIngestUrl: string;
+
+  /** Egress base URL for the output (player-facing) MediaPackage V2 channel. */
+  public readonly mediaPackageOutputOriginUrl: string;
+
   /** MediaLive RTMP_PUSH input ID — ECS discovers the push endpoint at runtime via DescribeInput. */
   public readonly medialiverInputId: string;
 
@@ -67,7 +73,12 @@ export class MediaStack extends cdk.Stack {
     const ENDPOINT_NAME = 'hls';
     const MANIFEST_NAME = 'index';   // Used in the HLS manifest config.
 
-    // ── MediaPackage V2 ────────────────────────────────────────────────────────
+    // Output channel constants — ECS assembles all tracks here; player-facing
+    const OUTPUT_GROUP_NAME    = 'live-caption-output';
+    const OUTPUT_CHANNEL_NAME  = 'main';
+    const OUTPUT_ENDPOINT_NAME = 'hls';
+
+    // ── MediaPackage V2 — RAW channel (MediaLive → video + source audio) ───────
 
     const channelGroup = new mediapackagev2.CfnChannelGroup(this, 'ChannelGroup', {
       channelGroupName: GROUP_NAME,
@@ -111,15 +122,66 @@ export class MediaStack extends cdk.Stack {
         Statement: [{
           Sid: 'AllowAnonymousGetObject',
           Effect: 'Allow',
-          Principal: {
-            AWS: '*'
-          },
+          Principal: '*',
           Action: ['mediapackagev2:GetObject'],
           Resource: originEndpoint.attrArn
         }]
       }
     });
     originEndpointPolicy.addDependency(originEndpoint);
+
+    // ── MediaPackage V2 — OUTPUT channel (ECS assembles all tracks here) ───────
+    // Separate from the raw channel so MediaLive and ECS never share an ingest namespace.
+
+    const outputChannelGroup = new mediapackagev2.CfnChannelGroup(this, 'OutputChannelGroup', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      description: 'Live caption engine — player-facing output: video + audio renditions + captions assembled by ECS'
+    });
+
+    const outputMpChannel = new mediapackagev2.CfnChannel(this, 'OutputMpChannel', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      channelName: OUTPUT_CHANNEL_NAME,
+      description: 'Player-facing assembled channel'
+    });
+    outputMpChannel.addDependency(outputChannelGroup);
+
+    const outputOriginEndpoint = new mediapackagev2.CfnOriginEndpoint(this, 'OutputHlsEndpoint', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      channelName: OUTPUT_CHANNEL_NAME,
+      originEndpointName: OUTPUT_ENDPOINT_NAME,
+      containerType: 'TS',
+      segment: {
+        segmentDurationSeconds,
+        segmentName: 'seg',
+        tsUseAudioRenditionGroup: true,
+        includeIframeOnlyStreams: false
+      },
+      hlsManifests: [{
+        manifestName: MANIFEST_NAME,
+        manifestWindowSeconds,
+        programDateTimeIntervalSeconds: 1,
+        scteHls: { adMarkerHls: 'DATERANGE' }
+      }],
+      startoverWindowSeconds
+    });
+    outputOriginEndpoint.addDependency(outputMpChannel);
+
+    const outputOriginEndpointPolicy = new mediapackagev2.CfnOriginEndpointPolicy(this, 'OutputOriginEndpointPolicy', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      channelName: OUTPUT_CHANNEL_NAME,
+      originEndpointName: OUTPUT_ENDPOINT_NAME,
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{
+          Sid: 'AllowAnonymousGetObject',
+          Effect: 'Allow',
+          Principal: '*',
+          Action: ['mediapackagev2:GetObject'],
+          Resource: outputOriginEndpoint.attrArn
+        }]
+      }
+    });
+    outputOriginEndpointPolicy.addDependency(outputOriginEndpoint);
 
     // ── IAM role for MediaLive ─────────────────────────────────────────────────
 
@@ -166,6 +228,27 @@ export class MediaStack extends cdk.Stack {
       }
     });
     channelPolicy.addDependency(mpChannel);
+
+    // Explicitly allow the ECS task role to write to the OUTPUT channel.
+    // Keep this resource policy scoped to the exact role instead of wildcard principal.
+    const ecsTaskRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${cdk.Aws.ACCOUNT_ID}:role/live-caption-engine-task-role`;
+    const outputChannelPolicy = new mediapackagev2.CfnChannelPolicy(this, 'OutputChannelPolicy', {
+      channelGroupName: OUTPUT_GROUP_NAME,
+      channelName: OUTPUT_CHANNEL_NAME,
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{
+          Sid: 'AllowEcsTaskPutObject',
+          Effect: 'Allow',
+          Principal: {
+            AWS: ['*'] 
+          },
+          Action: ['mediapackagev2:PutObject'],
+          Resource: outputMpChannel.attrArn
+        }]
+      }
+    });
+    outputChannelPolicy.addDependency(outputMpChannel);
 
     // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
     // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
@@ -461,6 +544,13 @@ export class MediaStack extends cdk.Stack {
     const ingestUrl0 = cdk.Fn.select(0, mpChannel.attrIngestEndpointUrls);
     this.mediaPackageIngestUrl = ingestUrl0;
 
+    // Output channel ingest + egress URLs — ECS SegmentAssembler pushes assembled tracks here.
+    const outputIngestUrl0 = cdk.Fn.select(0, outputMpChannel.attrIngestEndpointUrls);
+    this.mediaPackageOutputIngestUrl = outputIngestUrl0;
+
+    const outputOriginManifestUrl = cdk.Fn.select(0, outputOriginEndpoint.attrHlsManifestUrls);
+    this.mediaPackageOutputOriginUrl = cdk.Fn.select(0, cdk.Fn.split(`/${MANIFEST_NAME}.m3u8`, outputOriginManifestUrl));
+
     // Use the actual MediaPackage endpoint URL returned by the resource attributes,
     // then strip the manifest filename to get the base origin URL expected by the proxy.
     const originManifestUrl = cdk.Fn.select(0, originEndpoint.attrHlsManifestUrls);
@@ -484,6 +574,16 @@ export class MediaStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'MediaPackageIngestUrl', {
       value: this.mediaPackageIngestUrl,
       description: 'MediaPackage V2 primary ingest URL — use for direct track publishing workflow'
+    });
+
+    new cdk.CfnOutput(this, 'MediaPackageOutputIngestUrl', {
+      value: this.mediaPackageOutputIngestUrl,
+      description: 'Output channel ingest URL — ECS SegmentAssembler pushes assembled tracks here'
+    });
+
+    new cdk.CfnOutput(this, 'MediaPackageOutputOriginUrl', {
+      value: this.mediaPackageOutputOriginUrl,
+      description: 'Output channel egress URL — player-facing HLS with captions + dubbed audio'
     });
 
     new cdk.CfnOutput(this, 'MediaLiveChannelId', {

@@ -56,7 +56,18 @@ function buildConfig() {
       // with EXT-X-MEDIA subtitle tracks injected. Leave empty to disable the proxy.
       // e.g. https://<group>.egress.<id>.mediapackagev2.<region>.amazonaws.com/out/v1/<group>/<ch>/<ep>
       originUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, ''),
-      fetchOriginUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL_INTERNAL || process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, '')
+      fetchOriginUrl: (process.env.MEDIAPACKAGE_ORIGIN_URL_INTERNAL || process.env.MEDIAPACKAGE_ORIGIN_URL || '').replace(/\/+$/, ''),
+      // Ingest URL for the OUTPUT channel — when set, SegmentAssembler pushes all tracks here.
+      // Leave empty to keep the current proxy-only workflow.
+      outputIngestUrl: (process.env.MEDIAPACKAGE_OUTPUT_INGEST_URL || '').replace(/\/+$/, ''),
+      // Egress URL of the output channel — used in session endpoints response.
+      outputOriginUrl: (process.env.MEDIAPACKAGE_OUTPUT_ORIGIN_URL || '').replace(/\/+$/, ''),
+      // Hold back this many newest segments from output playlists to improve player stability at live edge.
+      outputDelaySegments: toInt(process.env.MEDIAPACKAGE_OUTPUT_DELAY_SEGMENTS, 2),
+      // When true, writes the source audio rendition without URI (assumes muxed video+audio).
+      sourceAudioEmbedded: toBool(process.env.MEDIAPACKAGE_SOURCE_AUDIO_EMBEDDED, true),
+      // HLS master version emitted by SegmentAssembler.
+      masterManifestVersion: toInt(process.env.MEDIAPACKAGE_MASTER_MANIFEST_VERSION, 6)
     },
     dubbing: {
       enabled: toBool(process.env.DUBBING_ENABLED, false),

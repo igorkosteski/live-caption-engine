@@ -1,4 +1,12 @@
-# Current Architecture — ECS as RTMP Entry Point
+# Architecture
+
+This document describes the valid deployed workflow:
+
+1. **Current** — ECS serves tracks locally, a manifest proxy stitches them into the MediaPackage master manifest.
+
+---
+
+# Current Architecture — ECS as RTMP Entry Point (deployed)
 
 `NginxRtmpStack` EC2 relay is **removed**.
 MediaLive uses `RTMP_PUSH` input — ECS relays the stream via ffmpeg.
