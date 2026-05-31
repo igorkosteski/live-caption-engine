@@ -591,7 +591,10 @@ async function main() {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ ok: false, message: 'Session not found' });
 
-    const masterUrl = `${config.mediapackage.fetchOriginUrl}/index.m3u8`;
+    const fetchOriginUrl = config.mediapackage.fetchOriginUrl;
+    const masterUrl = fetchOriginUrl.endsWith('.m3u8')
+      ? fetchOriginUrl
+      : `${fetchOriginUrl}/index.m3u8`;
     let upstreamText;
     try {
       const upstreamRes = await fetch(masterUrl);

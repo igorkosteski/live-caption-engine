@@ -38,7 +38,7 @@ export interface MediaStackProps extends cdk.StackProps {
 export class MediaStack extends cdk.Stack {
   /**
    * MediaPackage V2 egress origin base URL — used by the manifest proxy endpoint.
-   * Format: https://<group>.egress.<stageId>.mediapackagev2.<region>.amazonaws.com/out/v1/<group>/<channel>/<endpoint>
+  * Format: https://<egress-domain>/out/v1/<group>/<channel>/<endpoint>
    */
   public readonly mediaPackageOriginUrl: string;
 
@@ -458,16 +458,13 @@ export class MediaStack extends cdk.Stack {
     // ── Expose values for cross-stack references ───────────────────────────────
 
     // Primary ingest URL — the live-caption-engine PUTs VTT/AAC segments here.
-    // Derive egress origin URL from the first ingest endpoint URL.
-    // Ingest format: https://<group>-1.ingest.<stageId>.mediapackagev2.<region>.amazonaws.com/in/v1/...
     const ingestUrl0 = cdk.Fn.select(0, mpChannel.attrIngestEndpointUrls);
     this.mediaPackageIngestUrl = ingestUrl0;
-    const stageId = cdk.Fn.select(0, cdk.Fn.split('.mediapackagev2.', cdk.Fn.select(1, cdk.Fn.split('.ingest.', ingestUrl0))));
-    this.mediaPackageOriginUrl = cdk.Fn.join('', [
-      `https://${GROUP_NAME}.egress.`, stageId,
-      `.mediapackagev2.`, this.region,
-      `.amazonaws.com/out/v1/${GROUP_NAME}/${CHANNEL_NAME}/${ENDPOINT_NAME}`
-    ]);
+
+    // Use the actual MediaPackage endpoint URL returned by the resource attributes,
+    // then strip the manifest filename to get the base origin URL expected by the proxy.
+    const originManifestUrl = cdk.Fn.select(0, originEndpoint.attrHlsManifestUrls);
+    this.mediaPackageOriginUrl = cdk.Fn.select(0, cdk.Fn.split(`/${MANIFEST_NAME}.m3u8`, originManifestUrl));
 
     // this.playbackUrl   = `https://${cfnDist.attrDomainName}`;
     // this.hlsPlaylistUrl = `https://${cfnDist.attrDomainName}/${MANIFEST_NAME}/index.m3u8`;
