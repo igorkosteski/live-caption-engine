@@ -18,6 +18,8 @@ const { createAutoSessionManager } = require('./rtmp-auto-session');
 const RtmpStreamSession = require('./rtmp-stream-session');
 const LiveWebVtt = require('./captions/live-webvtt');
 const AudioHlsPublisher = require('./dubbing/audio-hls-publisher');
+const SegmentAssembler = require('./dubbing/segment-assembler');
+const MediaPackageIngestPusher = require('./dubbing/mediapackage-ingest-pusher');
 const GeminiDubbingEngine = require('./engines/gemini-dubbing-engine');
 const PollyDubbingEngine = require('./engines/polly-dubbing-engine');
 const SonioxDubbingEngine = require('./engines/soniox-dubbing-engine');
@@ -123,6 +125,25 @@ async function main() {
     const engine = createEngine({ engineName: config.engine, logger, sonioxConfig, geminiConfig, streamConfig });
     const streamSession = new RtmpStreamSession({ logger, streamConfig, engine });
 
+    // ── Segment Assembler (target workflow: push all tracks to MPv2 output channel) ──
+    // Only active when MEDIAPACKAGE_OUTPUT_INGEST_URL is configured.
+    let segmentAssembler = null;
+    if (config.mediapackage.outputIngestUrl && config.mediapackage.fetchOriginUrl) {
+      const pusher = new MediaPackageIngestPusher({
+        ingestBaseUrl: config.mediapackage.outputIngestUrl,
+        region: process.env.AWS_REGION,
+        logger
+      });
+      segmentAssembler = new SegmentAssembler({
+        rawEgressBaseUrl: config.mediapackage.fetchOriginUrl,
+        pusher,
+        logger,
+        pollIntervalMs: 2000,
+        segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000))
+      });
+      logger.info({ outputIngestUrl: config.mediapackage.outputIngestUrl }, 'SegmentAssembler enabled — tracks will be pushed to MPv2 output channel');
+    }
+
     // ── Captions ────────────────────────────────────────────────────────────
 
     const captionsActive = config.captions.enabled;
@@ -134,9 +155,15 @@ async function main() {
           segmentDurationMs: config.captions.segmentDurationMs,
           windowSegments: config.captions.windowSegments,
           minCueDurationMs: config.captions.minCueDurationMs,
-          basePath: captionsBasePath
+          basePath: captionsBasePath,
+          lang: 'src',
+          segmentAssembler
         })
       : null;
+
+    if (captions && segmentAssembler) {
+      segmentAssembler.registerCaptionLang('src');
+    }
 
     /** @type {Map<string, LiveWebVtt>} */
     const translatedCaptionsByLang = new Map();
@@ -153,10 +180,16 @@ async function main() {
             segmentDurationMs: config.captions.segmentDurationMs,
             windowSegments: config.captions.windowSegments,
             minCueDurationMs: config.captions.minCueDurationMs,
-            basePath: `${captionsBasePath}/${safeLang}`
+            basePath: `${captionsBasePath}/${safeLang}`,
+            lang: safeLang,
+            segmentAssembler
           });
 
           translatedCaptionsByLang.set(lang, translatedCaptions);
+
+          if (segmentAssembler) {
+            segmentAssembler.registerCaptionLang(safeLang);
+          }
         }
 
         engine.on('final-caption-translated', (cue) => {
@@ -265,6 +298,10 @@ async function main() {
     streamSession.on('audio', forwardSourceAudio);
     detachSourceAudioForwarder = () => streamSession.removeListener('audio', forwardSourceAudio);
 
+    if (segmentAssembler) {
+      segmentAssembler.registerAudioLang('src');
+    }
+
     const sourceAudioPublisher = new AudioHlsPublisher({
       logger,
       ffmpegPath: streamConfig.ffmpegPath,
@@ -276,7 +313,8 @@ async function main() {
       safeLang: 'src',
       audioPath: config.dubbing.audioPath,
       segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000)),
-      windowSegments: config.captions.windowSegments
+      windowSegments: config.captions.windowSegments,
+      segmentAssembler
     });
 
     await sourceAudioPublisher.start();
@@ -289,6 +327,10 @@ async function main() {
     });
 
     for (const { engine: dubbingEngine, lang, safeLang } of dubbingEngines) {
+      if (segmentAssembler) {
+        segmentAssembler.registerAudioLang(safeLang);
+      }
+
       const { sampleRate, channels } = dubbingEngine.dubbingStream;
       const publisher = new AudioHlsPublisher({
         logger,
@@ -301,7 +343,8 @@ async function main() {
         safeLang,
         audioPath: config.dubbing.audioPath,
         segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000)),
-        windowSegments: config.captions.windowSegments
+        windowSegments: config.captions.windowSegments,
+        segmentAssembler
       });
 
       await publisher.start();
@@ -315,6 +358,11 @@ async function main() {
     }
 
     // ── Build endpoint map for the API response ──────────────────────────────
+
+    // Start assembler now that all publishers are registered and running
+    if (segmentAssembler) {
+      segmentAssembler.start();
+    }
 
     const endpoints = {
       captions: captions ? `${captionsBasePath}/live.vtt` : null,
@@ -332,6 +380,9 @@ async function main() {
       })),
       manifest: config.mediapackage.originUrl
         ? `/sessions/${sessionId}/manifest/master.m3u8`
+        : null,
+      outputManifest: config.mediapackage.outputOriginUrl
+        ? `${config.mediapackage.outputOriginUrl}/master.m3u8`
         : null
     };
 
@@ -340,6 +391,9 @@ async function main() {
     // ── Teardown helper ──────────────────────────────────────────────────────
 
     const stop = async () => {
+      if (segmentAssembler) {
+        try { segmentAssembler.stop(); } catch { /* ignore */ }
+      }
       if (mediaLiveRelayProcess) {
         try { mediaLiveRelayProcess.kill('SIGTERM'); } catch { /* ignore */ }
         mediaLiveRelayProcess = null;

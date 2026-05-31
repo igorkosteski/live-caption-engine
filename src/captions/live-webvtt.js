@@ -1,13 +1,26 @@
 class LiveWebVtt {
-  constructor({ logger, segmentDurationMs, windowSegments, basePath = '/captions', minCueDurationMs = 2500 }) {
+  /**
+   * @param {object} opts
+   * @param {object}   opts.logger
+   * @param {number}   [opts.segmentDurationMs]
+   * @param {number}   [opts.windowSegments]
+   * @param {string}   [opts.basePath]
+   * @param {number}   [opts.minCueDurationMs]
+   * @param {string}   [opts.lang]             Language code for assembler notifications (e.g. 'en', 'src')
+   * @param {object}   [opts.segmentAssembler] SegmentAssembler instance to notify on new segments
+   */
+  constructor({ logger, segmentDurationMs, windowSegments, basePath = '/captions', minCueDurationMs = 2500, lang = null, segmentAssembler = null }) {
     this.logger = logger;
     this.segmentDurationMs = Math.max(segmentDurationMs || 6000, 1000);
     this.windowSegments = Math.max(windowSegments || 5, 1);
     this.basePath = basePath;
     this.minCueDurationMs = Math.max(minCueDurationMs || 0, 0);
+    this.lang = lang;
+    this.segmentAssembler = segmentAssembler;
     this.segments = new Map();
     this.cues = [];
     this.latestSegmentIndex = -1;
+    this._assemblerNotifiedSegments = new Set();
   }
 
   addCue(cue) {
@@ -42,6 +55,21 @@ class LiveWebVtt {
 
     this.latestSegmentIndex = Math.max(this.latestSegmentIndex, endIndex);
     this.prune();
+
+    // Notify assembler about newly completed segments (all segments up to endIndex)
+    if (this.segmentAssembler && this.lang) {
+      for (let idx = Math.max(0, endIndex - 1); idx <= endIndex; idx++) {
+        if (!this._assemblerNotifiedSegments.has(idx)) {
+          const vttContent = this.renderSegment(idx);
+          if (vttContent) {
+            this._assemblerNotifiedSegments.add(idx);
+            this.segmentAssembler.enqueueCaptionSegment(this.lang, idx, vttContent);
+          }
+        }
+      }
+      // Always push the latest playlist state
+      this.segmentAssembler.updateCaptionPlaylist(this.lang, this.renderPlaylist());
+    }
   }
 
   renderPlaylist() {

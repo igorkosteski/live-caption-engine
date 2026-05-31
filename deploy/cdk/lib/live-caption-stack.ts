@@ -34,6 +34,17 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
   mediapackageIngestUrl?: string;
 
   /**
+   * MediaPackage V2 ingest URL for the OUTPUT channel (player-facing).
+   * When provided, ECS SegmentAssembler pushes assembled tracks here.
+   */
+  mediapackageOutputIngestUrl?: string;
+
+  /**
+   * Egress base URL of the output (player-facing) MediaPackage V2 channel.
+   */
+  mediapackageOutputOriginUrl?: string;
+
+  /**
    * Enable AWS Polly dubbing support (adds polly:SynthesizeSpeech to the task role).
    * @default false
    */
@@ -304,6 +315,12 @@ export class LiveCaptionStack extends cdk.Stack {
           : {}),
         ...(props.mediapackageIngestUrl
           ? { MEDIAPACKAGE_INGEST_URL: props.mediapackageIngestUrl }
+          : {}),
+        ...(props.mediapackageOutputIngestUrl
+          ? { MEDIAPACKAGE_OUTPUT_INGEST_URL: props.mediapackageOutputIngestUrl }
+          : {}),
+        ...(props.mediapackageOutputOriginUrl
+          ? { MEDIAPACKAGE_OUTPUT_ORIGIN_URL: props.mediapackageOutputOriginUrl }
           : {}),
         ...(props.medialiverInputId
           ? { MEDIALIVE_INPUT_ID: props.medialiverInputId }

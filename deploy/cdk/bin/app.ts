@@ -42,6 +42,9 @@ const liveCaptionStack = new LiveCaptionStack(app, 'LiveCaptionEngine', {
   mediapackageOriginInternalUrl: mediaStack.mediaPackageOriginUrl,
   // MPv2 ingest path for direct track publishing workflow.
   mediapackageIngestUrl: mediaStack.mediaPackageIngestUrl,
+  // MPv2 output channel — ECS SegmentAssembler pushes assembled tracks here.
+  mediapackageOutputIngestUrl: mediaStack.mediaPackageOutputIngestUrl,
+  mediapackageOutputOriginUrl: mediaStack.mediaPackageOutputOriginUrl,
   dubbingPollyEnabled,
   desiredCount:    1,
   minCapacity:     1,
