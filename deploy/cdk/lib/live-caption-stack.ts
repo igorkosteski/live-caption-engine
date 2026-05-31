@@ -97,6 +97,12 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
    * not provide one explicitly.
    */
   defaultRtmpUrl?: string;
+
+  /**
+   * MediaLive RTMP_PUSH input ID — passed to the container so it can discover
+   * the push endpoint URL at runtime via DescribeInput and relay streams to MediaLive.
+   */
+  medialiverInputId?: string;
 }
 
 export class LiveCaptionStack extends cdk.Stack {
@@ -108,6 +114,8 @@ export class LiveCaptionStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
   /** The Application Load Balancer. */
   public readonly loadBalancer: elbv2.ApplicationLoadBalancer;
+  /** The Network Load Balancer for RTMP ingest on port 1935. */
+  public readonly rtmpLoadBalancer: elbv2.NetworkLoadBalancer;
 
   constructor(scope: Construct, id: string, props: LiveCaptionStackProps = {}) {
     super(scope, id, props);
@@ -225,6 +233,15 @@ export class LiveCaptionStack extends cdk.Stack {
       }));
     }
 
+    if (props.medialiverInputId) {
+      // DescribeInput is required to discover the RTMP_PUSH endpoint URL at runtime.
+      taskRole.addToPolicy(new iam.PolicyStatement({
+        sid: 'MediaLiveDescribeInput',
+        actions: ['medialive:DescribeInput'],
+        resources: ['*']
+      }));
+    }
+
     // CloudWatch metrics / logs from the container (for custom metrics if added later).
     taskRole.addToPolicy(new iam.PolicyStatement({
       sid: 'CloudWatchLogs',
@@ -286,6 +303,9 @@ export class LiveCaptionStack extends cdk.Stack {
         ...(props.mediapackageIngestUrl
           ? { MEDIAPACKAGE_INGEST_URL: props.mediapackageIngestUrl }
           : {}),
+        ...(props.medialiverInputId
+          ? { MEDIALIVE_INPUT_ID: props.medialiverInputId }
+          : {}),
         AWS_REGION:              this.region
       },
       secrets: {
@@ -296,6 +316,7 @@ export class LiveCaptionStack extends cdk.Stack {
     });
 
     container.addPortMappings({ containerPort: 8080, protocol: ecs.Protocol.TCP });
+    container.addPortMappings({ containerPort: 1935, protocol: ecs.Protocol.TCP });
 
     // ── Security groups ────────────────────────────────────────────────────────
     const albSg = new ec2.SecurityGroup(this, 'AlbSg', {
@@ -312,6 +333,7 @@ export class LiveCaptionStack extends cdk.Stack {
       allowAllOutbound: true   // Needs to reach Soniox/Gemini WS + MediaPackage.
     });
     serviceSg.addIngressRule(albSg, ec2.Port.tcp(8080), 'ALB to container');
+    serviceSg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(1935), 'RTMP push from encoder via NLB');
 
     // ── ALB ───────────────────────────────────────────────────────────────────
     this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
@@ -347,6 +369,35 @@ export class LiveCaptionStack extends cdk.Stack {
       defaultTargetGroups: [targetGroup]
     });
 
+    // ── NLB for RTMP ingest ─────────────────────────────────────────────────
+    this.rtmpLoadBalancer = new elbv2.NetworkLoadBalancer(this, 'NlbRtmp', {
+      vpc,
+      internetFacing: true,
+      loadBalancerName: 'live-caption-rtmp',
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC }
+    });
+
+    const rtmpTargetGroup = new elbv2.NetworkTargetGroup(this, 'RtmpTargetGroup', {
+      vpc,
+      port: 1935,
+      protocol: elbv2.Protocol.TCP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        protocol: elbv2.Protocol.TCP,
+        port: '1935',
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 2,
+        interval: cdk.Duration.seconds(10)
+      },
+      deregistrationDelay: cdk.Duration.seconds(10)
+    });
+
+    this.rtmpLoadBalancer.addListener('RtmpListener', {
+      port: 1935,
+      protocol: elbv2.Protocol.TCP,
+      defaultTargetGroups: [rtmpTargetGroup]
+    });
+
     // ── Fargate service ────────────────────────────────────────────────────────
     this.service = new ecs.FargateService(this, 'Service', {
       cluster: this.cluster,
@@ -364,6 +415,7 @@ export class LiveCaptionStack extends cdk.Stack {
     });
 
     this.service.attachToApplicationTargetGroup(targetGroup);
+    this.service.attachToNetworkTargetGroup(rtmpTargetGroup);
 
     // ── Auto-scaling ───────────────────────────────────────────────────────────
     const scaling = this.service.autoScaleTaskCount({
@@ -387,6 +439,11 @@ export class LiveCaptionStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AlbDnsName', {
       value: this.loadBalancer.loadBalancerDnsName,
       description: 'ALB DNS — POST http://<this>/sessions to start a stream'
+    });
+
+    new cdk.CfnOutput(this, 'RtmpNlbDnsName', {
+      value: this.rtmpLoadBalancer.loadBalancerDnsName,
+      description: 'NLB DNS — encoders push RTMP here: rtmp://<this>:1935/live/primary'
     });
 
     new cdk.CfnOutput(this, 'EcrRepositoryUri', {

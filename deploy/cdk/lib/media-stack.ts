@@ -9,13 +9,6 @@ import { Construct } from 'constructs';
 
 export interface MediaStackProps extends cdk.StackProps {
   /**
-  * Deprecated for pull-mode input.
-  * Kept only for backward compatibility.
-   * @default 'live/primary'
-   */
-  rtmpStreamName?: string;
-
-  /**
    * HLS segment duration in seconds.  Must match MediaLive segmentLength.
    * @default 6
    */
@@ -40,26 +33,6 @@ export interface MediaStackProps extends cdk.StackProps {
    */
   channelClass?: 'STANDARD' | 'SINGLE_PIPELINE';
 
-  /**
-   * Base RTMP URL of the nginx-rtmp relay, WITHOUT the stream name.
-   * e.g. `rtmp://<host>:1935/live`
-   *
-    * MediaLive pulls the input stream from this relay.
-   *
-    * @default undefined
-   */
-  nginxRtmpBaseUrl?: string;
-
-  /**
-    * Stream name MediaLive pulls from on the nginx-rtmp relay.
-   * e.g. `primary`  →  full URL becomes `<nginxRtmpBaseUrl>/primary`
-   *
-   * For STANDARD channel class a second-pipeline stream `<name>-b` is
-   * derived automatically.
-   *
-   * @default 'primary'
-   */
-  nginxRtmpStreamName?: string;
 }
 
 export class MediaStack extends cdk.Stack {
@@ -72,8 +45,8 @@ export class MediaStack extends cdk.Stack {
   /** Primary MediaPackage V2 ingest URL for track publishing. */
   public readonly mediaPackageIngestUrl: string;
 
-  /** nginx-rtmp input URL used by MediaLive RTMP_PULL input. */
-  public readonly nginxRtmpTapUrl?: string;
+  /** MediaLive RTMP_PUSH input ID — ECS discovers the push endpoint at runtime via DescribeInput. */
+  public readonly medialiverInputId: string;
 
   /** CloudFront distribution HTTPS root URL. */
   // public readonly playbackUrl: string;
@@ -88,8 +61,6 @@ export class MediaStack extends cdk.Stack {
     const manifestWindowSeconds  = props.manifestWindowSeconds  ?? 60;
     const startoverWindowSeconds = props.startoverWindowSeconds ?? 7200;
     const channelClass           = props.channelClass           ?? 'SINGLE_PIPELINE';
-    const nginxRtmpBaseUrl       = props.nginxRtmpBaseUrl;
-    const nginxRtmpStreamName    = props.nginxRtmpStreamName ?? 'primary';
 
     const GROUP_NAME    = 'live-caption';
     const CHANNEL_NAME  = 'main';
@@ -196,22 +167,19 @@ export class MediaStack extends cdk.Stack {
     });
     channelPolicy.addDependency(mpChannel);
 
-    if (!nginxRtmpBaseUrl) {
-      throw new Error('nginxRtmpBaseUrl is required for RTMP_PULL MediaLive input');
-    }
-
-    // RTMP_PULL: one source URL per pipeline (SINGLE=1, STANDARD=2).
-    const numPipelines = channelClass === 'STANDARD' ? 2 : 1;
-    const rtmpSourceUrls = Array.from({ length: numPipelines }, (_, i) =>
-      `${nginxRtmpBaseUrl}/${i === 0 ? nginxRtmpStreamName : `${nginxRtmpStreamName}-b`}`
-    );
-
+    // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
+    // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
     const rtmpInput = new medialive.CfnInput(this, 'RtmpInput', {
       name: 'live-caption-rtmp',
-      type: 'RTMP_PULL',
-      sources: rtmpSourceUrls.map((url) => ({
-        url
-      }))
+      type: 'RTMP_PUSH',
+      destinations: [{
+        streamName: 'live/primary'
+      }]
+    });
+    this.medialiverInputId = rtmpInput.ref;
+    new cdk.CfnOutput(this, 'MediaLiveInputId', {
+      value: rtmpInput.ref,
+      description: 'MediaLive RTMP_PUSH input ID — ECS container discovers push endpoint via DescribeInput'
     });
 
     // ── CloudWatch Logs for MediaLive ─────────────────────────────────────────
@@ -229,8 +197,6 @@ export class MediaStack extends cdk.Stack {
     const mp2Urls = mpChannel.attrIngestEndpointUrls;
     const mp2Url0 = cdk.Fn.select(0, mp2Urls);
     const mp2Url1 = channelClass === 'STANDARD' ? cdk.Fn.select(1, mp2Urls) : mp2Url0;
-
-    this.nginxRtmpTapUrl = nginxRtmpBaseUrl ? `${nginxRtmpBaseUrl}/${nginxRtmpStreamName}` : undefined;
 
     // ── MediaLive destinations ─────────────────────────────────────────────────
     // 'mp2' → MediaPackage V2 ingest.
@@ -521,22 +487,10 @@ export class MediaStack extends cdk.Stack {
       description: 'MediaLive channel ID — run: aws medialive start-channel --channel-id <id>'
     });
 
-    new cdk.CfnOutput(this, 'MediaLiveInputId', {
-      value: rtmpInput.ref,
-      description: 'MediaLive input ID (RTMP_PULL from nginx-rtmp relay)'
-    });
-
     new cdk.CfnOutput(this, 'MediaLiveInputArn', {
       value: rtmpInput.attrArn,
-      description: 'Copy to console or: aws medialive describe-input --input-id <id> to find RTMP URL(s)'
+      description: 'MediaLive RTMP_PUSH input ARN'
     });
-
-    if (nginxRtmpBaseUrl) {
-      new cdk.CfnOutput(this, 'NginxRtmpTapUrl', {
-        value: this.nginxRtmpTapUrl!,
-        description: 'nginx-rtmp relay URL that MediaLive pulls from'
-      });
-    }
 
     // new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
     //   value: cfnDist.ref,

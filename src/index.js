@@ -1,6 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('crypto');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -62,6 +63,24 @@ async function main() {
 
   /** @type {Map<string, object>} */
   const sessions = new Map();
+
+  // ── MediaLive RTMP relay — resolve push URL once at startup ─────────────────
+  const mediaLivePushUrl = await (async () => {
+    const inputId = process.env.MEDIALIVE_INPUT_ID;
+    if (!inputId) return null;
+    try {
+      const { MediaLiveClient, DescribeInputCommand } = require('@aws-sdk/client-medialive');
+      const client = new MediaLiveClient({ region: process.env.AWS_REGION || 'us-east-1' });
+      const response = await client.send(new DescribeInputCommand({ InputId: inputId }));
+      const url = response.Destinations?.[0]?.Url;
+      if (url) logger.info({ inputId, url }, 'Resolved MediaLive RTMP push URL');
+      else logger.warn({ inputId }, 'MediaLive input has no destinations yet — relay disabled');
+      return url ?? null;
+    } catch (err) {
+      logger.error({ err }, 'Failed to resolve MediaLive RTMP push URL — relay disabled');
+      return null;
+    }
+  })();
 
   // ── Session factory ──────────────────────────────────────────────────────
 
@@ -222,6 +241,26 @@ async function main() {
 
     await streamSession.start();
 
+    // ── MediaLive RTMP relay ───────────────────────────────────────────────────
+    let mediaLiveRelayProcess = null;
+    if (mediaLivePushUrl) {
+      const ffmpegPath = streamConfig.ffmpegPath || 'ffmpeg';
+      mediaLiveRelayProcess = spawn(ffmpegPath, [
+        '-i', rtmpUrl,
+        '-c', 'copy',
+        '-f', 'flv',
+        mediaLivePushUrl
+      ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      mediaLiveRelayProcess.stderr.on('data', (d) => {
+        logger.debug({ sessionId }, `[relay] ${d.toString().trim()}`);
+      });
+      mediaLiveRelayProcess.on('exit', (code, signal) => {
+        logger.info({ sessionId, code, signal }, '[relay] MediaLive ffmpeg relay exited');
+        mediaLiveRelayProcess = null;
+      });
+      logger.info({ sessionId, rtmpUrl, pushUrl: mediaLivePushUrl }, 'MediaLive RTMP relay started');
+    }
+
     const forwardSourceAudio = (chunk) => sourceAudioEmitter.emit('data', chunk);
     streamSession.on('audio', forwardSourceAudio);
     detachSourceAudioForwarder = () => streamSession.removeListener('audio', forwardSourceAudio);
@@ -301,6 +340,10 @@ async function main() {
     // ── Teardown helper ──────────────────────────────────────────────────────
 
     const stop = async () => {
+      if (mediaLiveRelayProcess) {
+        try { mediaLiveRelayProcess.kill('SIGTERM'); } catch { /* ignore */ }
+        mediaLiveRelayProcess = null;
+      }
       if (detachSourceAudioForwarder) {
         detachSourceAudioForwarder();
         detachSourceAudioForwarder = null;

@@ -133,26 +133,84 @@ ffmpeg -re -stream_loop -1 -i sample.mp4 \
 
 ## 5. ECS Docker and Deploy Flow
 
-1. Build ECS image:
+The CDK deploys two stacks:
+
+- **LiveCaptionMedia** — MediaLive RTMP_PUSH input + MediaPackage V2 channel/endpoint
+- **LiveCaptionEngine** — ECS Fargate service + ALB (HTTP API) + NLB (RTMP ingest on TCP :1935)
+
+The encoder pushes RTMP directly to the NLB. ECS fires the native `prePublish` event to auto-start caption sessions — identical to the local flow. An ffmpeg relay forwards the stream from ECS to MediaLive.
+
+### Deploy steps
+
+1. Bootstrap CDK (once per account/region) and deploy both stacks:
 
 ```bash
+cd deploy/cdk
+npm install
+npx cdk bootstrap aws://<ACCOUNT>/<REGION>
+npx cdk deploy --all
+```
+
+Note the outputs:
+- `MediaLiveChannelId` — needed to start/stop the channel
+- `RtmpNlbDnsName` — push your encoder stream here
+- `AlbDnsName` — HTTP API base URL
+- `EcrRepositoryUri` — ECR repo for the app image
+
+2. Set API keys in Secrets Manager:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id <SonioxSecretArn> \
+  --secret-string '{"value":"sk-your-key"}'
+
+aws secretsmanager put-secret-value \
+  --secret-id <GeminiSecretArn> \
+  --secret-string '{"value":"AIzaSy-your-key"}'
+```
+
+3. Build and push the app image:
+
+```bash
+aws ecr get-login-password --region <REGION> | \
+  docker login --username AWS --password-stdin <EcrRepositoryUri>
+
 docker build -f Dockerfile.ecs -t live-caption-engine:latest .
+docker tag  live-caption-engine:latest <EcrRepositoryUri>:latest
+docker push <EcrRepositoryUri>:latest
+
+aws ecs update-service \
+  --cluster live-caption-engine \
+  --service live-caption-engine \
+  --force-new-deployment
 ```
 
-2. Tag and push image to ECR:
+4. Start the MediaLive channel:
 
 ```bash
-docker tag live-caption-engine:latest <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
-docker push <account-id>.dkr.ecr.<region>.amazonaws.com/live-caption-engine:latest
+aws medialive start-channel --channel-id <MediaLiveChannelId>
 ```
 
-3. Create or update ECS task definition from template:
+5. Push your encoder stream to the NLB:
 
-- Edit `deploy/ecs-task-definition.template.json`
-- Set account id, region, roles, RTMP URL
-- Keep API keys in AWS Secrets Manager
+```text
+rtmp://<RtmpNlbDnsName>:1935/live/primary
+```
 
-4. Run task or update ECS service with the new task revision.
+The ECS container auto-starts a caption session on the first RTMP publish (same `prePublish` mechanism as local). No manual `POST /sessions` call is needed.
+
+Optional query params work the same as local:
+
+```text
+rtmp://<RtmpNlbDnsName>:1935/live/primary?languages=en,de&dubbingLanguages=fr
+```
+
+6. Stop session and channel when done:
+
+```bash
+curl -X DELETE http://<AlbDnsName>/sessions/<sessionId>
+aws medialive stop-channel --channel-id <MediaLiveChannelId>
+```
 
 ## 6. Engine Architecture
 
@@ -195,6 +253,8 @@ Notes:
 - `NO_AUDIO_TIMEOUT_MS`: restart pipeline if no audio arrives for this duration
 - `RECONNECT_DELAY_MS`: delay between retries
 - `MAX_RETRIES`: 0 means unlimited retries
+- `MEDIALIVE_INPUT_ID`: when set, the app resolves the MediaLive RTMP_PUSH endpoint at startup and relays each session's stream to MediaLive via ffmpeg (injected automatically by CDK; not needed for local runs)
+- `AWS_REGION`: AWS region used by the MediaLive SDK client (default: `us-east-1`; injected by CDK)
 
 ## 8. Per-Session Captions and Dubbing Output
 
@@ -231,3 +291,5 @@ curl -N http://localhost:8080/sessions/<sessionId>/dub/en/audio.pcm
 - The service logs transcript and session lifecycle events to stdout.
 - Finalized tokens are converted into timed WebVTT cues.
 - Use CloudWatch logs in ECS to consume runtime updates.
+- In AWS, sessions are auto-started by the native `prePublish` event — no EC2 nginx-rtmp relay is required. The ECS task acts as the RTMP entry point behind a Network Load Balancer.
+- The ffmpeg MediaLive relay is activated only when `MEDIALIVE_INPUT_ID` is set. It is a no-op in local development.
