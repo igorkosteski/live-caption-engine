@@ -46,7 +46,7 @@ function patchMasterManifest({ upstreamText, subtitleLines, audioLines = [], pub
   if (hasAudioGroup) {
     patched = patched.replace(/^#EXT-X-STREAM-INF:(.+)$/gm, (_line, attrs) => {
       if (/\bAUDIO=/.test(attrs)) {
-        return `#EXT-X-STREAM-INF:${attrs}`;
+        return `#EXT-X-STREAM-INF:${attrs.replace(/\bAUDIO="[^"]*"/, 'AUDIO="dub-audio"')}`;
       }
 
       return `#EXT-X-STREAM-INF:${attrs},AUDIO="dub-audio"`;
