@@ -21,7 +21,13 @@ class MediaPackageIngestPusher {
    * @param {number}   [opts.maxRetries]   Number of retry attempts on transient errors (default 3)
    */
   constructor({ ingestBaseUrl, region, logger, maxRetries = 3 }) {
-    this.ingestBaseUrl = ingestBaseUrl.replace(/\/$/, '');
+    const cleanUrl = ingestBaseUrl.replace(/\/$/, '');
+    this.ingestBaseUrl = cleanUrl; // kept for logging
+    // The MPv2 ingest URL ends with the manifest name (e.g. .../main/index).
+    // All PUT operations go to the parent directory (.../main/{filename}).
+    // The primary manifest is PUT as {manifestName}.m3u8 in that same directory.
+    this.ingestDirUrl = cleanUrl.replace(/\/[^\/]+$/, '');     // .../main
+    this.manifestFilename = cleanUrl.split('/').pop() + '.m3u8'; // index.m3u8
     this.region = region || process.env.AWS_REGION || 'us-east-1';
     this.logger = logger;
     this.maxRetries = maxRetries;
@@ -30,7 +36,7 @@ class MediaPackageIngestPusher {
     this._signer = null;
     this._credentials = null;
 
-    this.logger.info({ ingestBaseUrl: this.ingestBaseUrl, region: this.region }, '[pusher] initialised');
+    this.logger.info({ ingestDirUrl: this.ingestDirUrl, manifestFilename: this.manifestFilename, region: this.region }, '[pusher] initialised');
   }
 
   async _getSigner() {
@@ -60,12 +66,13 @@ class MediaPackageIngestPusher {
    * @param {string}          contentType MIME type
    */
   async put(trackName, filename, data, contentType) {
-    // Build URL: track+file → base/track/file, file only → base/file, neither → base URL (primary manifest)
+    // All files go to the parent directory of the manifest name.
+    // Empty trackName+filename means primary manifest (e.g. index.m3u8).
     const url = trackName
-      ? `${this.ingestBaseUrl}/${trackName}/${filename}`
+      ? `${this.ingestDirUrl}/${trackName}/${filename}`
       : filename
-        ? `${this.ingestBaseUrl}/${filename}`
-        : this.ingestBaseUrl;
+        ? `${this.ingestDirUrl}/${filename}`
+        : `${this.ingestDirUrl}/${this.manifestFilename}`;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
 
     this.logger.debug({ url, bytes: body.length, contentType }, '[pusher] PUT start');

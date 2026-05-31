@@ -386,10 +386,9 @@ class SegmentAssembler extends EventEmitter {
     lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}${subsAttr}`);
     lines.push('index_1.m3u8');
 
-    // PUT as {manifestName}.m3u8 under the ingest namespace — all files go to
-    // {ingestBaseUrl}/{filename}, including the primary manifest (index.m3u8).
-    // Putting to the bare ingest base URL returns 400 "file prefix incorrect".
-    await this.pusher.put('', 'index.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
+    // PUT to the bare ingest base URL — this IS the primary manifest endpoint.
+    // Child playlists and segments go to {ingestBaseUrl}/{filename}.
+    await this.pusher.put('', '', lines.join('\n'), 'application/vnd.apple.mpegurl');
   }
 
   // ── HTTP helpers ───────────────────────────────────────────────────────────
