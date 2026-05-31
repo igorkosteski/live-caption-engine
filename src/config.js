@@ -63,7 +63,11 @@ function buildConfig() {
       // Egress URL of the output channel — used in session endpoints response.
       outputOriginUrl: (process.env.MEDIAPACKAGE_OUTPUT_ORIGIN_URL || '').replace(/\/+$/, ''),
       // Hold back this many newest segments from output playlists to improve player stability at live edge.
-      outputDelaySegments: toInt(process.env.MEDIAPACKAGE_OUTPUT_DELAY_SEGMENTS, 2)
+      outputDelaySegments: toInt(process.env.MEDIAPACKAGE_OUTPUT_DELAY_SEGMENTS, 2),
+      // When true, writes the source audio rendition without URI (assumes muxed video+audio).
+      sourceAudioEmbedded: toBool(process.env.MEDIAPACKAGE_SOURCE_AUDIO_EMBEDDED, true),
+      // HLS master version emitted by SegmentAssembler.
+      masterManifestVersion: toInt(process.env.MEDIAPACKAGE_MASTER_MANIFEST_VERSION, 6)
     },
     dubbing: {
       enabled: toBool(process.env.DUBBING_ENABLED, false),

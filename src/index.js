@@ -140,12 +140,16 @@ async function main() {
         logger,
         pollIntervalMs: 2000,
         segmentDurationSec: Math.max(1, Math.round(config.captions.segmentDurationMs / 1000)),
-        outputDelaySegments: config.mediapackage.outputDelaySegments
+        outputDelaySegments: config.mediapackage.outputDelaySegments,
+        sourceAudioEmbedded: config.mediapackage.sourceAudioEmbedded,
+        masterManifestVersion: config.mediapackage.masterManifestVersion
       });
       logger.info(
         {
           outputIngestUrl: config.mediapackage.outputIngestUrl,
-          outputDelaySegments: config.mediapackage.outputDelaySegments
+          outputDelaySegments: config.mediapackage.outputDelaySegments,
+          sourceAudioEmbedded: config.mediapackage.sourceAudioEmbedded,
+          masterManifestVersion: config.mediapackage.masterManifestVersion
         },
         'SegmentAssembler enabled — tracks will be pushed to MPv2 output channel'
       );

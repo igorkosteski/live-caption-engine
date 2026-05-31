@@ -27,7 +27,16 @@ class SegmentAssembler extends EventEmitter {
    * @param {number}   [opts.pollIntervalMs]        How often to poll raw channel playlist (default 2000)
    * @param {number}   [opts.segmentDurationSec]   Expected segment duration — used for master manifest (default 6)
    */
-  constructor({ rawEgressBaseUrl, pusher, logger, pollIntervalMs = 2000, segmentDurationSec = 6, outputDelaySegments = 2 }) {
+  constructor({
+    rawEgressBaseUrl,
+    pusher,
+    logger,
+    pollIntervalMs = 2000,
+    segmentDurationSec = 6,
+    outputDelaySegments = 2,
+    sourceAudioEmbedded = true,
+    masterManifestVersion = 6
+  }) {
     super();
     this.rawEgressBaseUrl = rawEgressBaseUrl.replace(/\/$/, '');
     this.pusher = pusher;
@@ -35,6 +44,8 @@ class SegmentAssembler extends EventEmitter {
     this.pollIntervalMs = pollIntervalMs;
     this.segmentDurationSec = segmentDurationSec;
     this.outputDelaySegments = Math.max(0, outputDelaySegments);
+    this.sourceAudioEmbedded = !!sourceAudioEmbedded;
+    this.masterManifestVersion = Math.max(4, masterManifestVersion || 6);
 
     // Track which video segments we have already forwarded
     this._seenVideoSegments = new Set();
@@ -375,15 +386,22 @@ class SegmentAssembler extends EventEmitter {
   }
 
   async _pushMasterManifest() {
-    const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-INDEPENDENT-SEGMENTS'];
+    const lines = ['#EXTM3U', `#EXT-X-VERSION:${this.masterManifestVersion}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
 
     // Audio renditions — flat URIs required by MPv2 ingest (no subdirectories)
     for (const lang of this._audioLangs) {
       const isDefault = lang === 'src';
       const name = lang === 'src' ? 'Original' : `Dub ${lang}`;
-      lines.push(
-        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=YES,URI="audio-${lang}.m3u8"`
-      );
+      if (isDefault && this.sourceAudioEmbedded) {
+        // Source audio is muxed in the video variant; omit URI for compatibility.
+        lines.push(
+          `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${name}",DEFAULT=YES,AUTOSELECT=YES`
+        );
+      } else {
+        lines.push(
+          `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=YES,URI="audio-${lang}.m3u8"`
+        );
+      }
     }
 
     // Subtitle renditions — flat URIs
