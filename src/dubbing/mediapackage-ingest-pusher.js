@@ -29,6 +29,8 @@ class MediaPackageIngestPusher {
     // Lazily initialised AWS signing helpers
     this._signer = null;
     this._credentials = null;
+
+    this.logger.info({ ingestBaseUrl: this.ingestBaseUrl, region: this.region }, '[pusher] initialised');
   }
 
   async _getSigner() {
@@ -66,19 +68,22 @@ class MediaPackageIngestPusher {
         : this.ingestBaseUrl;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
 
+    this.logger.debug({ url, bytes: body.length, contentType }, '[pusher] PUT start');
+
     let attempt = 0;
     while (attempt <= this.maxRetries) {
       try {
         await this._put(url, body, contentType);
+        this.logger.debug({ url, attempt }, '[pusher] PUT ok');
         return;
       } catch (err) {
         attempt++;
         if (attempt > this.maxRetries) {
-          this.logger.error({ err, trackName, filename }, 'MediaPackage ingest PUT failed after retries');
+          this.logger.error({ err, url, trackName, filename, attempts: attempt }, '[pusher] PUT failed after retries');
           throw err;
         }
-        this.logger.warn({ err, trackName, filename, attempt }, 'MediaPackage ingest PUT failed, retrying');
         const delay = Math.min(200 * Math.pow(2, attempt - 1) + Math.random() * 100, 5000);
+        this.logger.warn({ err: err.message, url, attempt, delayMs: Math.round(delay) }, '[pusher] PUT failed, retrying');
         await new Promise(r => setTimeout(r, delay));
       }
     }
@@ -118,12 +123,15 @@ class MediaPackageIngestPusher {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve();
           } else {
-            reject(new Error(`MediaPackage PUT ${url} → ${res.statusCode}: ${raw.slice(0, 200)}`));
+            reject(new Error(`MediaPackage PUT ${url} failed! Status: ${res.statusCode}. Body: ${raw.slice(0, 400)}`));
           }
         });
       });
 
-      req.on('error', reject);
+      req.on('error', (err) => {
+        this.logger.error({ err: err.message, url }, '[pusher] socket error');
+        reject(err);
+      });
       req.write(body);
       req.end();
     });

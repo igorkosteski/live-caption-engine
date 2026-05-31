@@ -66,7 +66,10 @@ class SegmentAssembler extends EventEmitter {
   start() {
     if (this._running) return;
     this._running = true;
-    this.logger.info({ rawEgressBaseUrl: this.rawEgressBaseUrl }, '[assembler] starting');
+    this.logger.info(
+      { rawEgressBaseUrl: this.rawEgressBaseUrl, captionLangs: [...this._captionLangs], audioLangs: [...this._audioLangs] },
+      '[assembler] starting'
+    );
     // Push master manifest once now so players can discover the stream immediately.
     // It will be re-pushed only if registerCaptionLang/registerAudioLang is called later.
     this._pushMasterManifest().catch(err =>
@@ -181,21 +184,27 @@ class SegmentAssembler extends EventEmitter {
   async _pollOnce() {
     // Step 1: resolve variant URL from raw master manifest if not yet done
     if (!this._rawVariantUrl) {
+      this.logger.debug({ url: `${this.rawEgressBaseUrl}/index.m3u8` }, '[assembler] fetching raw master manifest');
       const master = await this._fetch(`${this.rawEgressBaseUrl}/index.m3u8`);
       this._rawVariantUrl = this._parseFirstVariantUrl(master, this.rawEgressBaseUrl);
       if (!this._rawVariantUrl) {
-        this.logger.debug('[assembler] raw master not ready yet');
+        this.logger.debug('[assembler] raw master not ready yet (no variant URL found)');
         return;
       }
       this.logger.info({ variantUrl: this._rawVariantUrl }, '[assembler] resolved raw variant URL');
     }
 
     // Step 2: fetch raw media playlist
+    this.logger.debug({ variantUrl: this._rawVariantUrl }, '[assembler] fetching raw variant playlist');
     const playlist = await this._fetch(this._rawVariantUrl);
     const { mediaSequence, segments } = this._parseMediaPlaylist(playlist, this._rawVariantUrl);
 
     // Step 3: find new segments we haven't forwarded yet
     const newSegments = segments.filter(s => !this._seenVideoSegments.has(s.url));
+    this.logger.debug(
+      { totalSegments: segments.length, newSegments: newSegments.length, mediaSequence },
+      '[assembler] playlist parsed'
+    );
     if (newSegments.length === 0) return;
 
     this._videoMediaSequence = mediaSequence + segments.indexOf(newSegments[0]);
@@ -207,19 +216,25 @@ class SegmentAssembler extends EventEmitter {
   }
 
   async _forwardVideoSegment(seg) {
-    this.logger.info({ filename: seg.filename }, '[assembler] forwarding video segment');
+    this.logger.info({ filename: seg.filename, url: seg.url }, '[assembler] downloading video segment');
+    const t0 = Date.now();
 
     // Download from raw channel
     const videoData = await this._fetchBinary(seg.url);
+    this.logger.debug({ filename: seg.filename, bytes: videoData.length, ms: Date.now() - t0 }, '[assembler] video segment downloaded');
 
     // Push video segment to output channel — flat path, no track subdirectory
+    this.logger.debug({ filename: seg.filename, bytes: videoData.length }, '[assembler] pushing video segment to output MPv2');
     await this.pusher.put('', seg.filename, videoData, 'video/mp2t');
+    this.logger.info({ filename: seg.filename, ms: Date.now() - t0 }, '[assembler] video segment pushed');
 
     // Flush pending captions and audio
     await this._flushPending();
 
     // Push updated playlists after flushing segments
     await this._pushPlaylists();
+
+    this.logger.info({ filename: seg.filename, totalMs: Date.now() - t0 }, '[assembler] segment cycle complete');
   }
 
   async _flushPending() {
@@ -228,11 +243,14 @@ class SegmentAssembler extends EventEmitter {
     // Audio/caption segments are prefixed with the track name to avoid collisions.
     // All segment PUTs are fired in parallel — they are independent of each other.
     const puts = [];
+    let captionCount = 0;
+    let audioCount = 0;
 
     for (const [lang, items] of this._pendingCaptions) {
       for (const item of items) {
         const flatFilename = `captions-${lang}-${item.filename}`;
         puts.push(this.pusher.put('', flatFilename, item.data, item.contentType));
+        captionCount++;
       }
       this._pendingCaptions.set(lang, []);
     }
@@ -241,10 +259,14 @@ class SegmentAssembler extends EventEmitter {
       for (const item of items) {
         const flatFilename = `audio-${lang}-${item.filename}`;
         puts.push(this.pusher.put('', flatFilename, item.data, item.contentType));
+        audioCount++;
       }
       this._pendingAudio.set(lang, []);
     }
 
+    if (puts.length > 0) {
+      this.logger.debug({ captionSegments: captionCount, audioSegments: audioCount }, '[assembler] flushing pending segments');
+    }
     await Promise.all(puts);
   }
 
@@ -254,11 +276,13 @@ class SegmentAssembler extends EventEmitter {
     // Audio, caption, and video variant playlists are all independent — fire in parallel.
     // Master manifest is NOT pushed here; it is pushed once at start() and on track changes.
     const puts = [];
+    const names = [];
 
     for (const [lang, playlist] of this._captionPlaylists) {
       if (playlist) {
         const flat = this._rewriteCaptionPlaylist(lang, playlist);
         puts.push(this.pusher.put('', `captions-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl'));
+        names.push(`captions-${lang}.m3u8`);
       }
     }
 
@@ -267,13 +291,17 @@ class SegmentAssembler extends EventEmitter {
       if (playlist) {
         const flat = this._rewriteAudioPlaylist(lang, playlist);
         puts.push(this.pusher.put('', `audio-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl'));
+        names.push(`audio-${lang}.m3u8`);
       }
     }
 
     // Video variant playlist — parallel with track playlists (segments already up)
     puts.push(this._pushVideoPlaylist());
+    names.push('index_1.m3u8');
 
+    this.logger.debug({ playlists: names }, '[assembler] pushing playlists');
     await Promise.all(puts);
+    this.logger.debug({ playlists: names }, '[assembler] playlists pushed ok');
   }
 
   /**
