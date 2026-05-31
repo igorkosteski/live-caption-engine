@@ -22,10 +22,11 @@ class MediaPackageIngestPusher {
    */
   constructor({ ingestBaseUrl, region, logger, maxRetries = 3 }) {
     const cleanUrl = ingestBaseUrl.replace(/\/$/, '');
-    // MPv2 ingest URL ending with /index is the primary manifest endpoint.
-    // Child playlists and segments are uploaded to the parent directory.
+    // MPv2 ingest URL ends with the manifest stem (e.g. .../main/index).
+    // Primary manifest is uploaded as .../main/index.m3u8 and assets use .../main/{filename}.
     this.ingestBaseUrl = cleanUrl;
     this.ingestDirUrl = cleanUrl.replace(/\/[^\/]+$/, '');
+    this.primaryManifestUrl = `${this.ingestDirUrl}/${cleanUrl.split('/').pop()}.m3u8`;
     this.region = region || process.env.AWS_REGION || 'us-east-1';
     this.logger = logger;
     this.maxRetries = maxRetries;
@@ -38,6 +39,7 @@ class MediaPackageIngestPusher {
       {
         ingestBaseUrl: this.ingestBaseUrl,
         ingestDirUrl: this.ingestDirUrl,
+        primaryManifestUrl: this.primaryManifestUrl,
         region: this.region
       },
       '[pusher] initialised'
@@ -71,13 +73,13 @@ class MediaPackageIngestPusher {
    * @param {string}          contentType MIME type
    */
   async put(trackName, filename, data, contentType) {
-    // Empty trackName+filename means primary manifest at ingestBaseUrl.
+    // Empty trackName+filename means primary manifest at primaryManifestUrl.
     // All other files go under the ingest directory.
     const url = trackName
       ? `${this.ingestDirUrl}/${trackName}/${filename}`
       : filename
         ? `${this.ingestDirUrl}/${filename}`
-        : this.ingestBaseUrl;
+        : this.primaryManifestUrl;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
 
     this.logger.debug({ url, bytes: body.length, contentType }, '[pusher] PUT start');
