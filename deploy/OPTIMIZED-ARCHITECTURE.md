@@ -1,8 +1,23 @@
-# Optimized Architecture — ECS as RTMP Entry Point
+# Current Architecture — ECS as RTMP Entry Point
 
-Eliminates the `NginxRtmpStack` EC2 relay entirely.
-MediaLive switches from `RTMP_PULL` to `RTMP_PUSH` (its native/recommended input type).
-Auto-session trigger is identical to local — no HTTP callback hack needed.
+`NginxRtmpStack` EC2 relay is **removed**.
+MediaLive uses `RTMP_PUSH` input — ECS relays the stream via ffmpeg.
+Auto-session trigger uses the native NMS `prePublish` event — no HTTP callback needed.
+Captions and dubbed audio are served as HLS directly from ECS; a manifest proxy stitches
+them into the MediaPackage master manifest so the player sees a single playable URL.
+
+## Current deployed state
+
+| Component | Value |
+|---|---|
+| ECS service | `live-caption-engine` |
+| ECS task definition | `live-caption-engine:23` |
+| MediaLive input ID | `9787399` (RTMP_PUSH) |
+| MediaPackage origin | `https://p01vso.egress.ahg76l.mediapackagev2.eu-central-1.amazonaws.com/out/v1/live-caption/main/hls` |
+| MediaPackage ingest | `https://p01vso-1.ingest.ahg76l.mediapackagev2.eu-central-1.amazonaws.com/in/v1/live-caption/1/main/index` |
+| Player master manifest | `http://<ALB>/sessions/<sessionId>/manifest/master.m3u8` |
+| Dubbing in production | disabled (`DUBBING_ENABLED=false`) — enable per session via `dubbingLanguages` in API |
+| CloudFront | not in front of MediaPackage yet (direct egress URL) |
 
 ## Diagram
 
@@ -12,55 +27,85 @@ flowchart TD
 
     subgraph AWS
         NLB[Network Load Balancer\nTCP :1935]
+        ALB[Application Load Balancer\nHTTP :80]
 
         subgraph ECS["ECS — live-caption-engine"]
             NMS[NodeMediaServer\n:1935]
             ASM[AutoSessionManager\nprePublish → auto-start]
-            SESSION[RtmpStreamSession\nloopback RTMP pull]
-            RELAY[ffmpeg relay\nre-push to MediaLive]
+            SESSION[RtmpStreamSession\nloopback RTMP pull\nrtmp://127.0.0.1:1935/...]
+            RELAY[ffmpeg relay\nrtmpUrl → MediaLive push URL]
+            CAPTIONS[LiveWebVtt\nVTT segments served\n/sessions/:id/captions/...]
+            DUBBING[AudioHlsPublisher\nAAC+TS segments served\n/sessions/:id/dub/...]
+            PROXY[Manifest Proxy\npatches MP master manifest\n/sessions/:id/manifest/master.m3u8]
         end
 
         subgraph MEDIA["Media pipeline"]
-            ML[MediaLive\nRTMP_PUSH input]
-            MP[MediaPackage V2\nmulti-track ingest]
-            CF[CloudFront]
+            ML[MediaLive\nRTMP_PUSH input\ninputId=9787399]
+            MP[MediaPackage V2\negress HLS]
         end
     end
 
     PLAYER([Player])
 
-    ENC -->|RTMP push| NLB
-    NLB -->|TCP passthrough :1935| NMS
+    ENC -->|RTMP push :1935| NLB
+    NLB -->|TCP passthrough| NMS
 
     NMS -->|prePublish event| ASM
-    ASM -->|startSession| SESSION
-    SESSION -->|loopback RTMP pull\nrtmp://127.0.0.1:1935/...| NMS
+    ASM -->|startSession loopback URL| SESSION
+    SESSION -->|reads audio via loopback| NMS
 
-    NMS -->|stream passthrough| RELAY
-    RELAY -->|RTMP push| ML
+    SESSION -->|audio PCM| RELAY
+    RELAY -->|RTMP push\nDescribeInput at startup| ML
 
-    SESSION -->|PUT WebVTT segments| MP
-    SESSION -->|PUT dubbed AAC segments| MP
-    ML -->|HLS ingest\nvideo + source audio| MP
+    SESSION -->|final-caption events| CAPTIONS
+    SESSION -->|audio PCM| DUBBING
 
-    MP --> CF
-    CF -->|HLS master\nvideo + all audio tracks + captions| PLAYER
+    ML -->|HLS segments\nvideo + source audio| MP
+
+    PLAYER -->|GET master.m3u8| ALB
+    ALB --> PROXY
+    PROXY -->|fetches upstream| MP
+    PROXY -->|injects EXT-X-MEDIA audio group\n+ subtitle group| PLAYER
+
+    PLAYER -->|GET audio*.m3u8 + seg*.ts| ALB
+    ALB --> DUBBING
+
+    PLAYER -->|GET captions/*.m3u8 + *.vtt| ALB
+    ALB --> CAPTIONS
 ```
 
-## What changes vs current
+## Track assembly in the master manifest
 
-| | Current | This |
-|---|---|---|
-| `NginxRtmpStack` EC2 | Required | **Removed** |
-| MediaLive input type | `RTMP_PULL` | `RTMP_PUSH` |
-| Auto-session trigger | nginx `on_publish` HTTP callback (not built) | Native `prePublish` event |
-| Matches local dev flow | No | **Yes, exactly** |
-| Entry point infra | EC2 + EIP | NLB (TCP) |
+The manifest proxy (`/sessions/:id/manifest/master.m3u8`) fetches the raw MediaPackage
+master manifest and injects:
 
-## STANDARD channel class (dual pipeline)
+```
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",NAME="Original",LANGUAGE="src",DEFAULT=YES,URI="<ALB>/sessions/:id/dub/src/audio.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",NAME="Dub en",LANGUAGE="en",DEFAULT=NO,URI="<ALB>/sessions/:id/dub/en/audio.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Source",LANGUAGE="src",URI="<ALB>/sessions/:id/captions/index.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="en",LANGUAGE="en",URI="<ALB>/sessions/:id/captions/en/index.m3u8"
+...
+#EXT-X-STREAM-INF:...,AUDIO="dub-audio",SUBTITLES="subs"
+<MediaPackage video variant URL>
+```
 
-For `STANDARD` MediaLive class two redundant pipelines are needed.
-Each pipeline expects its own RTMP push stream.
+The player switches audio tracks and subtitle tracks entirely within a single manifest URL.
+
+## Key design decisions
+
+| Decision | Reason |
+|---|---|
+| ECS serves audio/subtitle HLS locally | No dependency on MediaPackage track ingest; works with standard MP V2 HLS endpoint |
+| Manifest proxy stitches tracks | Single playable URL for the player regardless of how many languages are active |
+| ffmpeg relay to MediaLive | ECS gets the stream first (for transcription), then pushes a copy to MediaLive for packaging |
+| NMS loopback RTMP pull | Session reads audio from the same NMS that received the encoder push; no separate RTMP pull source needed |
+| `MEDIALIVE_INPUT_ID` env var | ECS calls `DescribeInput` at startup to resolve the push URL dynamically — survives IP changes |
+
+## SINGLE_PIPELINE (default) vs STANDARD channel class
+
+For `SINGLE_PIPELINE` (default, cheaper): one NLB + one ECS task handles everything.
+
+For `STANDARD` (dual-pipeline, HA), two redundant ECS tasks each relay to one MediaLive pipeline:
 
 ```mermaid
 flowchart TD
@@ -91,9 +136,9 @@ flowchart TD
     RELAY_A -->|pipeline 0| ML
     RELAY_B -->|pipeline 1| ML
 
-    SESSION_A --> MP
-    SESSION_B --> MP
+    SESSION_A -->|captions + audio HLS| MP
+    SESSION_B -->|captions + audio HLS| MP
     ML --> MP
 ```
 
-For `SINGLE_PIPELINE` (default, cheaper) only Task A / NLB A is needed.
+Deploy with: `npx cdk deploy --all -c channelClass=STANDARD`
