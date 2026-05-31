@@ -192,7 +192,7 @@ class SegmentAssembler extends EventEmitter {
   }
 
   async _forwardVideoSegment(seg) {
-    this.logger.debug({ url: seg.url }, '[assembler] forwarding video segment');
+    this.logger.info({ filename: seg.filename }, '[assembler] forwarding video segment');
 
     // Download from raw channel
     const videoData = await this._fetchBinary(seg.url);
@@ -259,7 +259,7 @@ class SegmentAssembler extends EventEmitter {
     for (const url of window) {
       const filename = url.split('/').pop();
       lines.push(`#EXTINF:${this.segmentDurationSec}.000,`);
-      lines.push(`video/${filename}`);
+      lines.push(filename);  // relative to the video playlist directory (no video/ prefix)
     }
 
     await this.pusher.put('video', 'index.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
@@ -292,7 +292,8 @@ class SegmentAssembler extends EventEmitter {
     lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}${subsAttr}`);
     lines.push('video/index.m3u8');
 
-    await this.pusher.put('', 'master.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
+    // PUT primary manifest — no track prefix, filename matches the MPv2 endpoint manifestName ('index')
+    await this.pusher.put('', 'index.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
   }
 
   // ── HTTP helpers ───────────────────────────────────────────────────────────

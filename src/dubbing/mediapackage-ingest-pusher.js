@@ -58,7 +58,12 @@ class MediaPackageIngestPusher {
    * @param {string}          contentType MIME type
    */
   async put(trackName, filename, data, contentType) {
-    const url = `${this.ingestBaseUrl}/${trackName}/${filename}`;
+    // Build URL: track+file → base/track/file, file only → base/file, neither → base URL (primary manifest)
+    const url = trackName
+      ? `${this.ingestBaseUrl}/${trackName}/${filename}`
+      : filename
+        ? `${this.ingestBaseUrl}/${filename}`
+        : this.ingestBaseUrl;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
 
     let attempt = 0;
