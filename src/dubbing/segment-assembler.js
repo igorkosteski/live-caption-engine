@@ -430,6 +430,7 @@ class SegmentAssembler extends EventEmitter {
     // PUT to the bare ingest base URL — this IS the primary manifest endpoint.
     // Child playlists and segments go to {ingestBaseUrl}/{filename}.
     await this.pusher.put('', '', lines.join('\n'), 'application/vnd.apple.mpegurl');
+    this.logger.info('[assembler] master manifest pushed');
   }
 
   // ── HTTP helpers ───────────────────────────────────────────────────────────
