@@ -197,8 +197,8 @@ class SegmentAssembler extends EventEmitter {
     // Download from raw channel
     const videoData = await this._fetchBinary(seg.url);
 
-    // Push video segment to output channel
-    await this.pusher.put('video', seg.filename, videoData, 'video/mp2t');
+    // Push video segment to output channel — flat path, no track subdirectory
+    await this.pusher.put('', seg.filename, videoData, 'video/mp2t');
 
     // Flush pending captions and audio
     await this._flushPending();
@@ -208,39 +208,81 @@ class SegmentAssembler extends EventEmitter {
   }
 
   async _flushPending() {
+    // MPv2 requires flat path structure — no subdirectories.
+    // Video segments keep their original name (seg_1_xxx.ts — unique by sequence).
+    // Audio/caption segments are prefixed with the track name to avoid collisions.
     for (const [lang, items] of this._pendingCaptions) {
       for (const item of items) {
-        await this.pusher.put(`captions-${lang}`, item.filename, item.data, item.contentType);
+        const flatFilename = `captions-${lang}-${item.filename}`;
+        await this.pusher.put('', flatFilename, item.data, item.contentType);
       }
       this._pendingCaptions.set(lang, []);
     }
 
     for (const [lang, items] of this._pendingAudio) {
       for (const item of items) {
-        await this.pusher.put(`dub-${lang}`, item.filename, item.data, item.contentType);
+        const flatFilename = `audio-${lang}-${item.filename}`;
+        await this.pusher.put('', flatFilename, item.data, item.contentType);
       }
       this._pendingAudio.set(lang, []);
     }
   }
 
   async _pushPlaylists() {
+    // Caption playlists: regenerate with flat segment URIs (original from LiveWebVtt
+    // has absolute /captions/... paths pointing at the Node.js server — unusable here).
     for (const [lang, playlist] of this._captionPlaylists) {
       if (playlist) {
-        await this.pusher.put(`captions-${lang}`, 'index.m3u8', playlist, 'application/vnd.apple.mpegurl');
+        const flat = this._rewriteCaptionPlaylist(lang, playlist);
+        await this.pusher.put('', `captions-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl');
       }
     }
 
+    // Audio playlists: rewrite segment lines to use prefixed filenames.
     for (const [lang, playlist] of this._audioPlaylists) {
       if (playlist) {
-        await this.pusher.put(`dub-${lang}`, 'audio.m3u8', playlist, 'application/vnd.apple.mpegurl');
+        const flat = this._rewriteAudioPlaylist(lang, playlist);
+        await this.pusher.put('', `audio-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl');
       }
     }
 
-    // Push updated video variant playlist pointing to forwarded segments
+    // Video variant playlist
     await this._pushVideoPlaylist();
 
-    // Push master manifest
+    // Primary master manifest
     await this._pushMasterManifest();
+  }
+
+  /**
+   * Rewrite an audio HLS playlist (from AudioHlsPublisher) so that each segment
+   * filename is prefixed with `audio-{lang}-` to keep the flat MPv2 namespace collision-free.
+   */
+  _rewriteAudioPlaylist(lang, content) {
+    return content.split('\n').map(line => {
+      const trimmed = line.trim();
+      // Segment lines: non-empty, not a tag, not a comment
+      if (trimmed && !trimmed.startsWith('#') && trimmed.endsWith('.ts')) {
+        return `audio-${lang}-${trimmed.split('/').pop()}`;
+      }
+      return line;
+    }).join('\n');
+  }
+
+  /**
+   * Rewrite a caption playlist (from LiveWebVtt) whose segment URIs point at the
+   * Node.js server (/captions/src/segments/0.vtt).  Replace each .vtt line with a
+   * flat MPv2-compatible filename: `captions-{lang}-{index}.vtt`.
+   */
+  _rewriteCaptionPlaylist(lang, content) {
+    return content.split('\n').map(line => {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.endsWith('.vtt')) {
+        // Extract just the filename (last path segment)
+        const filename = trimmed.split('/').pop();
+        return `captions-${lang}-${filename}`;
+      }
+      return line;
+    }).join('\n');
   }
 
   async _pushVideoPlaylist() {
@@ -259,41 +301,42 @@ class SegmentAssembler extends EventEmitter {
     for (const url of window) {
       const filename = url.split('/').pop();
       lines.push(`#EXTINF:${this.segmentDurationSec}.000,`);
-      lines.push(filename);  // relative to the video playlist directory (no video/ prefix)
+      lines.push(filename);  // flat — same level as index_1.m3u8
     }
 
-    await this.pusher.put('video', 'index.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
+    // MPv2 convention: video variant playlist is named index_1.m3u8 (matches MediaLive output)
+    await this.pusher.put('', 'index_1.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
   }
 
   async _pushMasterManifest() {
     const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-INDEPENDENT-SEGMENTS'];
 
-    // Audio groups
+    // Audio renditions — flat URIs required by MPv2 ingest (no subdirectories)
     for (const lang of this._audioLangs) {
       const isDefault = lang === 'src';
       const name = lang === 'src' ? 'Original' : `Dub ${lang}`;
       lines.push(
-        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=YES,URI="dub-${lang}/audio.m3u8"`
+        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=YES,URI="audio-${lang}.m3u8"`
       );
     }
 
-    // Subtitle groups
+    // Subtitle renditions — flat URIs
     for (const lang of this._captionLangs) {
       const isDefault = lang === 'src';
       const name = lang === 'src' ? 'Source' : lang;
       lines.push(
-        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=${isDefault ? 'YES' : 'NO'},URI="captions-${lang}/index.m3u8"`
+        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="${lang}",NAME="${name}",DEFAULT=${isDefault ? 'YES' : 'NO'},AUTOSELECT=${isDefault ? 'YES' : 'NO'},URI="captions-${lang}.m3u8"`
       );
     }
 
-    // Stream inf
+    // Video stream — variant playlist at root level (index_1.m3u8, matching MediaLive convention)
     const audioAttr = this._audioLangs.size > 0 ? ',AUDIO="dub-audio"' : '';
     const subsAttr  = this._captionLangs.size > 0 ? ',SUBTITLES="subs"' : '';
     lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=4000000${audioAttr}${subsAttr}`);
-    lines.push('video/index.m3u8');
+    lines.push('index_1.m3u8');
 
-    // PUT primary manifest — no track prefix, filename matches the MPv2 endpoint manifestName ('index')
-    await this.pusher.put('', 'index.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
+    // PUT to the ingest base URL (no extra path) — this IS the primary manifest endpoint
+    await this.pusher.put('', '', lines.join('\n'), 'application/vnd.apple.mpegurl');
   }
 
   // ── HTTP helpers ───────────────────────────────────────────────────────────
