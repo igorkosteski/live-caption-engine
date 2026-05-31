@@ -390,6 +390,10 @@ async function main() {
         : null,
       outputManifest: config.mediapackage.outputOriginUrl
         ? `${config.mediapackage.outputOriginUrl}/index.m3u8`
+        : null,
+      // Minimal output manifest fallback (single video variant) for strict players.
+      outputManifestSimple: config.mediapackage.outputOriginUrl
+        ? `/sessions/${sessionId}/output/manifest/simple.m3u8`
         : null
     };
 
@@ -702,6 +706,28 @@ async function main() {
     });
 
     res.type('application/vnd.apple.mpegurl').send(patched);
+  });
+
+  // GET /sessions/:sessionId/output/manifest/simple.m3u8
+  // Returns a minimal master manifest that points directly at output index_1.m3u8.
+  // Useful for players that fail on complex rendition groups in the MPv2 master.
+  app.get('/sessions/:sessionId/output/manifest/simple.m3u8', async (req, res) => {
+    if (!config.mediapackage.outputOriginUrl) {
+      return res.status(503).json({ ok: false, message: 'MEDIAPACKAGE_OUTPUT_ORIGIN_URL not configured' });
+    }
+    const session = sessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ ok: false, message: 'Session not found' });
+
+    const variantUrl = `${config.mediapackage.outputOriginUrl}/index_1.m3u8`;
+    const text = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-INDEPENDENT-SEGMENTS',
+      '#EXT-X-STREAM-INF:BANDWIDTH=4000000',
+      variantUrl
+    ].join('\n');
+
+    res.type('application/vnd.apple.mpegurl').send(text);
   });
 
   // ── Health endpoints ──────────────────────────────────────────────────────
