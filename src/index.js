@@ -695,10 +695,13 @@ async function main() {
       );
     }
 
+    // Skip the synthetic 'src' rendition: MediaPackage already serves the
+    // original audio. Only expose translated dubs as alternates so we never
+    // override or duplicate the upstream default audio track.
     for (const { lang, safeLang } of session.dubbingHlsPublishers) {
-      const isSource = lang === 'src';
+      if (lang === 'src') continue;
       audioLines.push(
-        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="${isSource ? 'Original' : `Dub ${lang}`}",DEFAULT=${isSource ? 'YES' : 'NO'},AUTOSELECT=YES,URI="${dubBaseUrl}/${safeLang}/audio.m3u8"`
+        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub-audio",LANGUAGE="${lang}",NAME="Dub ${lang}",DEFAULT=NO,AUTOSELECT=YES,CHANNELS="2",URI="${dubBaseUrl}/${safeLang}/audio.m3u8"`
       );
     }
 

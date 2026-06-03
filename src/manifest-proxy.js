@@ -39,16 +39,30 @@ function rewriteManifestUris(manifestText, publicOriginUrl) {
     .join('\n');
 }
 
+function detectUpstreamAudioGroupId(manifestText) {
+  const match = manifestText.match(/^#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*GROUP-ID="([^"]+)"/m)
+    || manifestText.match(/^#EXT-X-STREAM-INF:[^\n]*AUDIO="([^"]+)"/m);
+  return match ? match[1] : null;
+}
+
 function patchMasterManifest({ upstreamText, subtitleLines, audioLines = [], publicOriginUrl }) {
   let patched = rewriteManifestUris(upstreamText, publicOriginUrl);
-  const hasAudioGroup = audioLines.length > 0;
 
-  if (hasAudioGroup) {
+  // If upstream already exposes an audio group, reuse its GROUP-ID so injected
+  // dub renditions become alternates of the original audio rather than
+  // hijacking or orphaning the audio mapping. Players (THEOplayer, Safari,
+  // Shaka) require every STREAM-INF AUDIO= to resolve to a declared group.
+  const upstreamAudioGroupId = detectUpstreamAudioGroupId(upstreamText);
+  let injectedAudioLines = audioLines;
+
+  if (audioLines.length > 0 && upstreamAudioGroupId) {
+    injectedAudioLines = audioLines.map((line) =>
+      line.replace(/GROUP-ID="[^"]+"/, `GROUP-ID="${upstreamAudioGroupId}"`)
+    );
+  } else if (audioLines.length > 0 && !upstreamAudioGroupId) {
+    // Only add AUDIO= to STREAM-INF lines that don't already declare one.
     patched = patched.replace(/^#EXT-X-STREAM-INF:(.+)$/gm, (_line, attrs) => {
-      if (/\bAUDIO=/.test(attrs)) {
-        return `#EXT-X-STREAM-INF:${attrs.replace(/\bAUDIO="[^"]*"/, 'AUDIO="dub-audio"')}`;
-      }
-
+      if (/\bAUDIO=/.test(attrs)) return `#EXT-X-STREAM-INF:${attrs}`;
       return `#EXT-X-STREAM-INF:${attrs},AUDIO="dub-audio"`;
     });
   }
@@ -59,8 +73,8 @@ function patchMasterManifest({ upstreamText, subtitleLines, audioLines = [], pub
       .replace(/^(#EXTM3U\s*)/, `$1${subtitleLines.join('\n')}\n`);
   }
 
-  if (hasAudioGroup) {
-    patched = patched.replace(/^(#EXTM3U\s*)/, `$1${audioLines.join('\n')}\n`);
+  if (injectedAudioLines.length > 0) {
+    patched = patched.replace(/^(#EXTM3U\s*)/, `$1${injectedAudioLines.join('\n')}\n`);
   }
 
   return patched;

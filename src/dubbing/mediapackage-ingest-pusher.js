@@ -22,11 +22,13 @@ class MediaPackageIngestPusher {
    */
   constructor({ ingestBaseUrl, region, logger, maxRetries = 3 }) {
     const cleanUrl = ingestBaseUrl.replace(/\/$/, '');
-    // MPv2 ingest URL ends with the manifest stem (e.g. .../main/index).
-    // Primary manifest is uploaded as .../main/index.m3u8 and assets use .../main/{filename}.
+    // MPv2 HLS ingest URL ends with the manifest stem:
+    //   .../in/v1/{group}/{stage}/{channel}/{manifestName}
+    // Master is uploaded as {ingestBaseUrl}.m3u8, all other files (variant playlists,
+    // segments) go under the channel directory: {ingestDirUrl}/{filename}.
     this.ingestBaseUrl = cleanUrl;
     this.ingestDirUrl = cleanUrl.replace(/\/[^\/]+$/, '');
-    this.primaryManifestUrl = `${this.ingestDirUrl}/${cleanUrl.split('/').pop()}.m3u8`;
+    this.primaryManifestUrl = `${cleanUrl}.m3u8`;
     this.region = region || process.env.AWS_REGION || 'us-east-1';
     this.logger = logger;
     this.maxRetries = maxRetries;

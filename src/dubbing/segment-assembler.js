@@ -84,11 +84,8 @@ class SegmentAssembler extends EventEmitter {
       { rawEgressBaseUrl: this.rawEgressBaseUrl, captionLangs: [...this._captionLangs], audioLangs: [...this._audioLangs] },
       '[assembler] starting'
     );
-    // Push master manifest once now so players can discover the stream immediately.
-    // It will be re-pushed only if registerCaptionLang/registerAudioLang is called later.
-    this._pushMasterManifest().catch(err =>
-      this.logger.warn({ err }, '[assembler] initial master manifest push failed')
-    );
+    // Master manifest is pushed only AFTER variant playlists exist on the channel
+    // (see _pushPlaylists). MPv2 will not serve a master that references missing variants.
     this._schedulePoll();
   }
 
@@ -108,11 +105,7 @@ class SegmentAssembler extends EventEmitter {
   registerCaptionLang(lang) {
     this._captionLangs.add(lang);
     if (!this._pendingCaptions.has(lang)) this._pendingCaptions.set(lang, []);
-    if (this._running) {
-      this._pushMasterManifest().catch(err =>
-        this.logger.warn({ err, lang }, '[assembler] master manifest re-push failed after registerCaptionLang')
-      );
-    }
+    // Master is re-pushed from _pushPlaylists after variants exist; nothing to do here.
   }
 
   /**
@@ -121,11 +114,7 @@ class SegmentAssembler extends EventEmitter {
   registerAudioLang(lang) {
     this._audioLangs.add(lang);
     if (!this._pendingAudio.has(lang)) this._pendingAudio.set(lang, []);
-    if (this._running) {
-      this._pushMasterManifest().catch(err =>
-        this.logger.warn({ err, lang }, '[assembler] master manifest re-push failed after registerAudioLang')
-      );
-    }
+    // Master is re-pushed from _pushPlaylists after variants exist; nothing to do here.
   }
 
   /**
@@ -297,15 +286,17 @@ class SegmentAssembler extends EventEmitter {
     // Caption playlists: regenerate with flat segment URIs (original from LiveWebVtt
     // has absolute /captions/... paths pointing at the Node.js server — unusable here).
     // Audio, caption, and video variant playlists are all independent — fire in parallel.
-    // Master manifest is NOT pushed here; it is pushed once at start() and on track changes.
     const puts = [];
     const names = [];
+    const availableCaptionLangs = [];
+    const availableAudioLangs = [];
 
     for (const [lang, playlist] of this._captionPlaylists) {
       if (playlist) {
         const flat = this._rewriteCaptionPlaylist(lang, playlist);
         puts.push(this.pusher.put('', `captions-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl'));
         names.push(`captions-${lang}.m3u8`);
+        availableCaptionLangs.push(lang);
       }
     }
 
@@ -315,6 +306,7 @@ class SegmentAssembler extends EventEmitter {
         const flat = this._rewriteAudioPlaylist(lang, playlist);
         puts.push(this.pusher.put('', `audio-${lang}.m3u8`, flat, 'application/vnd.apple.mpegurl'));
         names.push(`audio-${lang}.m3u8`);
+        availableAudioLangs.push(lang);
       }
     }
 
@@ -325,6 +317,23 @@ class SegmentAssembler extends EventEmitter {
     this.logger.debug({ playlists: names }, '[assembler] pushing playlists');
     await Promise.all(puts);
     this.logger.debug({ playlists: names }, '[assembler] playlists pushed ok');
+
+    // Push (or re-push) the master manifest only when its set of referenced variants
+    // has changed AND all referenced variants are now uploaded. MPv2 will 404 the
+    // primary playlist if the master references missing variant URIs.
+    const signature = JSON.stringify({
+      v: true,
+      a: availableAudioLangs.sort(),
+      c: availableCaptionLangs.sort()
+    });
+    if (signature !== this._lastMasterSignature) {
+      try {
+        await this._pushMasterManifest(availableAudioLangs, availableCaptionLangs);
+        this._lastMasterSignature = signature;
+      } catch (err) {
+        this.logger.warn({ err }, '[assembler] master manifest push failed');
+      }
+    }
   }
 
   /**
@@ -385,11 +394,20 @@ class SegmentAssembler extends EventEmitter {
     await this.pusher.put('', 'index_1.m3u8', lines.join('\n'), 'application/vnd.apple.mpegurl');
   }
 
-  async _pushMasterManifest() {
+  async _pushMasterManifest(availableAudioLangs = null, availableCaptionLangs = null) {
+    // Only reference variants that have actually been uploaded; MPv2 will reject the
+    // primary playlist if it references missing variant URIs.
+    const audioLangs = availableAudioLangs !== null
+      ? availableAudioLangs
+      : [...this._audioLangs];
+    const captionLangs = availableCaptionLangs !== null
+      ? availableCaptionLangs
+      : [...this._captionLangs];
+
     const lines = ['#EXTM3U', `#EXT-X-VERSION:${this.masterManifestVersion}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
 
     // Audio renditions — flat URIs required by MPv2 ingest (no subdirectories)
-    for (const lang of this._audioLangs) {
+    for (const lang of audioLangs) {
       const isDefault = lang === 'src';
       const name = lang === 'src' ? 'Original' : `Dub ${lang}`;
       if (isDefault && this.sourceAudioEmbedded) {
@@ -405,7 +423,7 @@ class SegmentAssembler extends EventEmitter {
     }
 
     // Subtitle renditions — flat URIs
-    for (const lang of this._captionLangs) {
+    for (const lang of captionLangs) {
       const name = lang === 'src' ? 'Source' : lang;
       lines.push(
         `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="${lang}",NAME="${name}",DEFAULT=NO,AUTOSELECT=NO,URI="captions-${lang}.m3u8"`
@@ -414,8 +432,8 @@ class SegmentAssembler extends EventEmitter {
 
     // Video stream — add a plain video-only fallback first for strict players.
     // Some clients fail when the first variant references alternate AUDIO/SUBTITLES groups.
-    const audioAttr = this._audioLangs.size > 0 ? ',AUDIO="dub-audio"' : '';
-    const subsAttr  = this._captionLangs.size > 0 ? ',SUBTITLES="subs"' : '';
+    const audioAttr = audioLangs.length > 0 ? ',AUDIO="dub-audio"' : '';
+    const subsAttr  = captionLangs.length > 0 ? ',SUBTITLES="subs"' : '';
     lines.push('#EXT-X-STREAM-INF:BANDWIDTH=4000000');
     lines.push('index_1.m3u8');
     if (audioAttr) {
@@ -430,7 +448,7 @@ class SegmentAssembler extends EventEmitter {
     // PUT to the bare ingest base URL — this IS the primary manifest endpoint.
     // Child playlists and segments go to {ingestBaseUrl}/{filename}.
     await this.pusher.put('', '', lines.join('\n'), 'application/vnd.apple.mpegurl');
-    this.logger.info('[assembler] master manifest pushed');
+    this.logger.info({ audioLangs, captionLangs }, '[assembler] master manifest pushed');
   }
 
   // ── HTTP helpers ───────────────────────────────────────────────────────────
