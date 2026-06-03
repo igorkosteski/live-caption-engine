@@ -255,8 +255,10 @@ class SegmentAssembler extends EventEmitter {
     const videoData = await this._fetchBinary(seg.url);
     this.logger.debug({ filename: seg.filename, bytes: videoData.length, ms: Date.now() - t0 }, '[assembler] video segment downloaded');
 
-    // Push video segment to output channel using MPv2 ingest naming: index_<videoIdx>_<seq>.ts
-    const ingestName = `index_${this._videoTrackIndex}_${this._videoSegSeq++}.ts`;
+    // Push video segment to output channel using MPv2 egress naming: seg_<videoIdx>_<seq>.ts
+    // (master = index.m3u8, variants = index_<N>.m3u8, segments = seg_<N>_<seq>.<ext>
+    //  per OriginEndpoint segmentName='seg').
+    const ingestName = `seg_${this._videoTrackIndex}_${this._videoSegSeq++}.ts`;
     this.logger.debug({ filename: seg.filename, ingestName, bytes: videoData.length }, '[assembler] pushing video segment to output MPv2');
     await this.pusher.put('', ingestName, videoData, 'video/mp2t');
     this.logger.info({ filename: seg.filename, ingestName, ms: Date.now() - t0 }, '[assembler] video segment pushed');
@@ -297,7 +299,7 @@ class SegmentAssembler extends EventEmitter {
       const renameMap = this._captionSegRename.get(lang);
       for (const item of items) {
         const seq = this._captionSegSeq.get(lang);
-        const ingestName = `index_${trackIdx}_${seq}.vtt`;
+        const ingestName = `seg_${trackIdx}_${seq}.vtt`;
         this._captionSegSeq.set(lang, seq + 1);
         renameMap.set(item.filename, ingestName);
         puts.push(this.pusher.put('', ingestName, item.data, item.contentType));
@@ -315,7 +317,7 @@ class SegmentAssembler extends EventEmitter {
       const renameMap = this._audioSegRename.get(lang);
       for (const item of items) {
         const seq = this._audioSegSeq.get(lang);
-        const ingestName = `index_${trackIdx}_${seq}.ts`;
+        const ingestName = `seg_${trackIdx}_${seq}.ts`;
         this._audioSegSeq.set(lang, seq + 1);
         renameMap.set(item.filename, ingestName);
         puts.push(this.pusher.put('', ingestName, item.data, item.contentType));
