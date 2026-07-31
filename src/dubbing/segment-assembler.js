@@ -77,8 +77,10 @@ class SegmentAssembler extends EventEmitter {
     this._nextTrackIndex = 2;
     this._audioTrackIndex = new Map();   // lang -> index
     this._captionTrackIndex = new Map(); // lang -> index
-    // Per-track sequence counters for renamed segments
-    this._videoSegSeq = 0;
+    // Per-track sequence counters — seeded from wall-clock time so a fresh SegmentAssembler
+    // (created on every RTMP reconnect) never reuses sequence numbers already ingested by a
+    // prior instance on the same long-lived output MPv2 channel.
+    this._videoSegSeq = Date.now();
     this._audioSegSeq = new Map();        // lang -> next seq
     this._captionSegSeq = new Map();      // lang -> next seq
     // Per-track filename remap (original upstream filename -> ingest filename)
@@ -126,7 +128,7 @@ class SegmentAssembler extends EventEmitter {
     if (!this._pendingCaptions.has(lang)) this._pendingCaptions.set(lang, []);
     if (!this._captionTrackIndex.has(lang)) {
       this._captionTrackIndex.set(lang, this._nextTrackIndex++);
-      this._captionSegSeq.set(lang, 0);
+      this._captionSegSeq.set(lang, Date.now());
       this._captionSegRename.set(lang, new Map());
     }
     // Master is re-pushed from _pushPlaylists after variants exist; nothing to do here.
@@ -140,7 +142,7 @@ class SegmentAssembler extends EventEmitter {
     if (!this._pendingAudio.has(lang)) this._pendingAudio.set(lang, []);
     if (!this._audioTrackIndex.has(lang)) {
       this._audioTrackIndex.set(lang, this._nextTrackIndex++);
-      this._audioSegSeq.set(lang, 0);
+      this._audioSegSeq.set(lang, Date.now());
       this._audioSegRename.set(lang, new Map());
     }
     // Master is re-pushed from _pushPlaylists after variants exist; nothing to do here.
@@ -258,7 +260,8 @@ class SegmentAssembler extends EventEmitter {
     // Push video segment to output channel using MPv2 egress naming: seg_<videoIdx>_<seq>.ts
     // (master = index.m3u8, variants = index_<N>.m3u8, segments = seg_<N>_<seq>.<ext>
     //  per OriginEndpoint segmentName='seg').
-    const ingestName = `seg_${this._videoTrackIndex}_${this._videoSegSeq++}.ts`;
+    const seq = this._videoSegSeq++;
+    const ingestName = `seg_${this._videoTrackIndex}_${seq}.ts`;
     this.logger.debug({ filename: seg.filename, ingestName, bytes: videoData.length }, '[assembler] pushing video segment to output MPv2');
     await this.pusher.put('', ingestName, videoData, 'video/mp2t');
     this.logger.info({ filename: seg.filename, ingestName, ms: Date.now() - t0 }, '[assembler] video segment pushed');
@@ -266,6 +269,7 @@ class SegmentAssembler extends EventEmitter {
     // Keep a small rolling timeline so the generated playlist mirrors source timing.
     this._videoSegments.push({
       filename: ingestName,
+      seq,
       duration: seg.duration,
       discontinuity: !!seg.discontinuity,
       programDateTime: seg.programDateTime || null
@@ -425,21 +429,29 @@ class SegmentAssembler extends EventEmitter {
     const windowSize = 9;
     const total = this._videoSegments.length;
     const delayedTotal = Math.max(0, total - this.outputDelaySegments);
-    const firstSeq = Math.max(0, delayedTotal - windowSize);
-    const window = this._videoSegments.slice(firstSeq, delayedTotal);
+    const firstIdx = Math.max(0, delayedTotal - windowSize);
+    const window = this._videoSegments.slice(firstIdx, delayedTotal);
 
     if (window.length === 0) return;
+
+    // MEDIA-SEQUENCE must reflect each segment's real, monotonic ingest seq — not its
+    // position in the local rolling buffer — so it never regresses across reconnects.
+    const targetDuration = Math.max(
+      this.segmentDurationSec,
+      ...window.map(s => Math.ceil(s.duration || this.segmentDurationSec))
+    );
 
     const lines = [
       '#EXTM3U',
       '#EXT-X-VERSION:3',
-      `#EXT-X-TARGETDURATION:${this.segmentDurationSec}`,
-      `#EXT-X-MEDIA-SEQUENCE:${firstSeq}`
+      `#EXT-X-TARGETDURATION:${targetDuration}`,
+      `#EXT-X-MEDIA-SEQUENCE:${window[0].seq}`
     ];
 
     // Keep output variant minimal and MPv2-friendly.
     for (const seg of window) {
-      lines.push(`#EXTINF:${Number(this.segmentDurationSec).toFixed(3)},`);
+      if (seg.discontinuity) lines.push('#EXT-X-DISCONTINUITY');
+      lines.push(`#EXTINF:${Number(seg.duration || this.segmentDurationSec).toFixed(3)},`);
       lines.push(seg.filename);  // flat — same level as index_1.m3u8
     }
 

@@ -4,21 +4,39 @@ AWS CDK v2 (TypeScript) that provisions the full live captioning pipeline:
 
 ```
 Encoder (OBS/FFMPEG)
-  │  RTMP push
+  │  RTMP push (:1935)
   ▼
-nginx-rtmp relay (EC2)
-  ├──── RTMP_PULL ────► AWS MediaLive ──── HLS segments ────► AWS MediaPackage V2
-  └──── RTMP pull ────► live-caption-engine (ECS Fargate + ALB)
-                          └── Session API + manifest patch endpoint
+NLB "live-caption-rtmp" ──► ECS Fargate (node-media-server)
+                              ├── ffmpeg relay ──► MediaLive (RTMP_PUSH) ──► MediaPackage V2 "raw" channel
+                              │                                                       │
+                              │                                          SegmentAssembler polls raw HLS
+                              │                                                       ▼
+                              └── Session API (ALB :80) ◄──────────────  pushes video + VTT captions +
+                                                                          dubbed audio tracks to
+                                                                          MediaPackage V2 "output" channel
+                                                                                     │
+                                                                                     ▼
+                                                                         Players (output channel egress)
 ```
+
+A caption session auto-starts as soon as the encoder publishes to the RTMP NLB — no API call is
+required for the default workflow. `POST /sessions` remains available for pulling from an external
+`rtmpUrl` instead of pushing directly.
 
 ## Stacks
 
+Only two stacks are actually wired up in [`bin/app.ts`](./bin/app.ts):
+
 | Stack | Description |
 |---|---|
-| `LiveCaptionNginxRtmp` | EC2 nginx-rtmp relay with stable EIP |
-| `LiveCaptionMedia` | MediaLive channel + MediaPackage V2 channel group |
-| `LiveCaptionEngine` | ECR repo + ECS Fargate service + ALB + Secrets Manager + IAM |
+| `LiveCaptionMedia` | MediaLive channel (RTMP_PUSH) + two MediaPackage V2 channel groups (raw + output) |
+| `LiveCaptionEngine` | ECR repo + ECS Fargate service (RTMP ingest + HTTP API) + ALB + NLB + Secrets Manager + IAM |
+
+> **Note:** [`lib/nginx-rtmp-stack.ts`](./lib/nginx-rtmp-stack.ts) still exists in this directory but is
+> **not instantiated** by `bin/app.ts` — it's leftover from an earlier architecture where an EC2
+> nginx-rtmp relay pulled into MediaLive. The current pipeline has ECS's own `node-media-server`
+> receive the RTMP push and relay to MediaLive directly, so this file is dead code. Delete it or wire
+> it back in deliberately if you still need it.
 
 ---
 
@@ -71,14 +89,12 @@ npx cdk deploy --all
 ```
 
 CDK deploys stacks in dependency order:
-1. `LiveCaptionNginxRtmp`
-2. `LiveCaptionMedia`
-3. `LiveCaptionEngine`
+1. `LiveCaptionMedia`
+2. `LiveCaptionEngine` (depends on `LiveCaptionMedia` for the MediaPackage ingest/egress URLs)
 
 ### Deploy a single stack
 
 ```bash
-npx cdk deploy LiveCaptionNginxRtmp  # nginx-rtmp relay only
 npx cdk deploy LiveCaptionMedia    # media pipeline only
 npx cdk deploy LiveCaptionEngine   # ECS service only
 ```
@@ -101,6 +117,7 @@ Pass any of these with `-c key=value` to override defaults without editing code.
 | `channelClass` | `SINGLE_PIPELINE` | MediaLive pipeline redundancy: `STANDARD` (2 pipelines, HA) or `SINGLE_PIPELINE` |
 | `dubbingPollyEnabled` | `false` | Add `polly:SynthesizeSpeech` to the ECS task role |
 | `vpcId` | _(create new)_ | Import an existing VPC by ID instead of creating one |
+| `repositoryName` | _(create new)_ | Import an existing ECR repository by name instead of creating one |
 
 Examples:
 
@@ -173,17 +190,22 @@ aws ecs update-service \
 ### 5c. Get the RTMP push URL for your encoder
 
 ```bash
-# Use the stack output from LiveCaptionNginxRtmp:
-#   NginxRtmpUrl = rtmp://<EIP>:1935/live/primary
+# Use the LiveCaptionEngine stack output:
+#   RtmpNlbDnsName = live-caption-rtmp-xxxxxxxx.elb.<region>.amazonaws.com
 ```
 
-Configure OBS (or any RTMP encoder):
-- **Server**: the URL up to and including the last `/`
-  e.g. `rtmp://<EIP>:1935/live/`
-- **Stream Key**: the part after the last `/`
-  e.g. `primary`
+Configure OBS (or any RTMP encoder) to push directly to the NLB in front of ECS's own
+`node-media-server`:
+- **Server**: `rtmp://<RtmpNlbDnsName>:1935/live`
+- **Stream Key**: any value, e.g. `primary`
 
-MediaLive is configured as `RTMP_PULL`, so it pulls from the nginx-rtmp relay.
+MediaLive is configured as `RTMP_PUSH`. ECS discovers MediaLive's actual push endpoint at runtime
+via `medialive:DescribeInput` and relays the incoming stream to it with an internal ffmpeg process
+— the encoder never talks to MediaLive directly.
+
+As soon as the encoder starts publishing, a caption session **auto-starts** (see
+`src/rtmp-auto-session.js`) — no `POST /sessions` call is required for this workflow. Stopping the
+encoder stream automatically tears the session down.
 
 ### 5d. Start the MediaLive channel
 
@@ -204,18 +226,25 @@ aws medialive describe-channel \
 
 ### 5e. Verify playback
 
+Two MediaPackage V2 channels exist — always play from the **output** channel, which is where ECS's
+`SegmentAssembler` pushes the fully assembled video + captions + dubbed-audio tracks:
+
 ```bash
-# Media stack outputs MediaPackageOriginUrl (base URL).
-# Check upstream HLS master directly from MediaPackage:
-curl -s "<MediaPackageOriginUrl from output>/index.m3u8" | head -20
+# Media stack output: MediaPackageOutputOriginUrl (base URL, player-facing).
+curl -s "<MediaPackageOutputOriginUrl from output>/index.m3u8" | head -20
 
 # Optional: play in VLC
-vlc "<MediaPackageOriginUrl from output>/index.m3u8"
+vlc "<MediaPackageOutputOriginUrl from output>/index.m3u8"
 ```
 
-### 5f. Start a caption session
+`MediaPackageOriginUrl` (the **raw** channel fed directly by MediaLive — video + source audio only,
+no captions/dubbing) is only useful for isolating MediaLive-side issues; it's not the player-facing URL.
 
-The ECS service exposes a REST API on the ALB. Use the `AlbDnsName` output:
+### 5f. (Optional) Start a caption session manually
+
+Only needed if you want to pull from an external `rtmpUrl` instead of pushing to the RTMP NLB
+(step 5c already auto-starts a session on publish). The ECS service exposes a REST API on the ALB.
+Use the `AlbDnsName` output:
 
 ```bash
 BASE=http://<AlbDnsName from output>
@@ -263,31 +292,53 @@ The response from `POST /sessions` includes per-session VTT and PCM endpoints:
 
 ### LiveCaptionMedia stack
 
+**Raw channel** (`live-caption` / `main`) — receives HLS directly from MediaLive:
+
 | Resource | Details |
 |---|---|
 | `MediaPackageV2::ChannelGroup` | Group name `live-caption` |
 | `MediaPackageV2::Channel` | Channel `main`; two ingest endpoints for pipeline redundancy |
 | `MediaPackageV2::OriginEndpoint` | HLS, 6 s segments, 60 s manifest window, 2 h DVR startover |
-| `MediaPackageV2::OriginEndpointPolicy` | Allows `mediapackagev2:GetObject` (currently open policy) |
-| `MediaLive::Input` | `RTMP_PULL` from nginx-rtmp relay |
-| `MediaLive::Channel` | H.264 720p 3 Mbps + AAC 192 kbps → HLS → MediaPackage V2 |
-| `IAM::Role` | MediaLive role: `mediapackagev2:PutObject` + CloudWatch logs |
+| `MediaPackageV2::OriginEndpointPolicy` | Allows anonymous `mediapackagev2:GetObject` (open policy) |
+| `MediaPackageV2::ChannelPolicy` | Allows `mediapackagev2:PutObject` scoped to the MediaLive role |
 
-Note: CloudFront resources are currently commented out in `media-stack.ts`.
+**Output channel** (`live-caption-output` / `main`) — player-facing; ECS's `SegmentAssembler`
+pushes assembled video + WebVTT caption tracks + dubbed audio tracks here:
+
+| Resource | Details |
+|---|---|
+| `MediaPackageV2::ChannelGroup` | Group name `live-caption-output` |
+| `MediaPackageV2::Channel` | Channel `main` |
+| `MediaPackageV2::OriginEndpoint` | Same HLS/segment/manifest settings as the raw channel |
+| `MediaPackageV2::OriginEndpointPolicy` | Allows anonymous `mediapackagev2:GetObject` (open policy) |
+| `MediaPackageV2::ChannelPolicy` | Allows `mediapackagev2:PutObject` scoped to the ECS task role |
+
+**MediaLive:**
+
+| Resource | Details |
+|---|---|
+| `MediaLive::Input` | `RTMP_PUSH`; ECS discovers the push endpoint at runtime via `DescribeInput` |
+| `MediaLive::Channel` | H.264 720p 3 Mbps + AAC 192 kbps → HLS → MediaPackage V2 (raw channel) |
+| `IAM::Role` | MediaLive role: `mediapackagev2:PutObject` (raw channel only) + CloudWatch logs |
+
+Note: CloudFront resources (OAC + distribution + endpoint policy) are fully commented out in
+`media-stack.ts` — no CloudFront distribution is currently deployed; playback goes straight to the
+MediaPackage V2 output channel egress URL.
 
 ### LiveCaptionEngine stack
 
 | Resource | Details |
 |---|---|
-| `ECR::Repository` | `live-caption-engine`; scan on push; 10-image lifecycle |
+| `ECR::Repository` | `live-caption-engine`; scan on push; 10-image lifecycle (or imported via `repositoryName`) |
 | `EC2::Vpc` | 2 AZs, public + private subnets, 1 NAT gateway (or imported via `vpcId`) |
 | `ECS::Cluster` | Container Insights V2 enabled |
 | `ECS::FargateService` | 0.5 vCPU / 1 GiB; min 1 / max 10 tasks; circuit breaker + rollback |
 | `ApplicationAutoScaling` | Scale on CPU > 60 % and memory > 70 % |
-| `ElasticLoadBalancingV2::ALB` | Internet-facing; sticky sessions (1 h) for long-lived PCM streams |
+| `ElasticLoadBalancingV2::ALB` | Internet-facing, port 80; sticky sessions (1 h) for long-lived PCM/VTT streams; targets container port 8080 |
+| `ElasticLoadBalancingV2::NLB` | Internet-facing, port 1935; forwards RTMP push traffic to the container's `node-media-server` |
 | `SecretsManager::Secret` | `soniox-api-key` + `gemini-api-key` injected as env vars |
 | `IAM::Role` (execution) | Pulls from ECR; reads secrets |
-| `IAM::Role` (task) | `polly:SynthesizeSpeech` (optional); `mediapackagev2:PutObject` |
+| `IAM::Role` (task) | `polly:SynthesizeSpeech` (optional); `mediapackagev2:PutObject` (both raw + output channels); `medialive:DescribeInput` |
 | `Logs::LogGroup` | `/ecs/live-caption-engine`; 30-day retention |
 
 ---
@@ -344,11 +395,11 @@ npx cdk destroy --all
 ```
 deploy/cdk/
 ├── bin/
-│   └── app.ts                  ← CDK app entrypoint + context flags
+│   └── app.ts                  ← CDK app entrypoint + context flags (instantiates 2 stacks)
 ├── lib/
-│   ├── live-caption-stack.ts   ← ECS + ALB + ECR + Secrets stack
-│   ├── media-stack.ts          ← MediaLive + MediaPackage V2 stack
-│   └── nginx-rtmp-stack.ts     ← nginx-rtmp EC2 relay stack
+│   ├── live-caption-stack.ts   ← ECS (RTMP ingest + HTTP API) + ALB + NLB + ECR + Secrets stack
+│   ├── media-stack.ts          ← MediaLive + MediaPackage V2 (raw + output channels) stack
+│   └── nginx-rtmp-stack.ts     ← NOT wired into bin/app.ts — orphaned from an earlier architecture
 ├── cdk.json                    ← CDK toolkit config
 ├── package.json
 ├── tsconfig.json

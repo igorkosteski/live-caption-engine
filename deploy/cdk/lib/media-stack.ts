@@ -241,7 +241,7 @@ export class MediaStack extends cdk.Stack {
           Sid: 'AllowEcsTaskPutObject',
           Effect: 'Allow',
           Principal: {
-            AWS: ['*'] 
+            AWS: ecsTaskRoleArn
           },
           Action: ['mediapackagev2:PutObject'],
           Resource: outputMpChannel.attrArn
