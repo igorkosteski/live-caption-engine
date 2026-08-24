@@ -45,6 +45,9 @@ const liveCaptionStack = new LiveCaptionStack(app, 'LiveCaptionEngine', {
   // MPv2 output channel — ECS SegmentAssembler pushes assembled tracks here.
   mediapackageOutputIngestUrl: mediaStack.mediaPackageOutputIngestUrl,
   mediapackageOutputOriginUrl: mediaStack.mediaPackageOutputOriginUrl,
+  // Channel ARN is passed so LiveCaptionStack can attach the channel policy
+  // using taskRole.roleArn (same-stack Fn::GetAtt, accepted by MediaPackage V2).
+  mediapackageOutputChannelArn: mediaStack.mediaPackageOutputChannelArn,
   dubbingPollyEnabled,
   desiredCount:    1,
   minCapacity:     1,

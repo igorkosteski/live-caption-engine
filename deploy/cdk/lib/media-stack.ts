@@ -51,6 +51,12 @@ export class MediaStack extends cdk.Stack {
   /** Egress base URL for the output (player-facing) MediaPackage V2 channel. */
   public readonly mediaPackageOutputOriginUrl: string;
 
+  /**
+   * Output channel ARN — pass to LiveCaptionStack so it can attach the
+   * ECS task-role channel policy without a circular stack dependency.
+   */
+  public readonly mediaPackageOutputChannelArn: string;
+
   /** MediaLive RTMP_PUSH input ID — ECS discovers the push endpoint at runtime via DescribeInput. */
   public readonly medialiverInputId: string;
 
@@ -229,26 +235,10 @@ export class MediaStack extends cdk.Stack {
     });
     channelPolicy.addDependency(mpChannel);
 
-    // Explicitly allow the ECS task role to write to the OUTPUT channel.
-    // Keep this resource policy scoped to the exact role instead of wildcard principal.
-    const ecsTaskRoleArn = `arn:${cdk.Aws.PARTITION}:iam::${cdk.Aws.ACCOUNT_ID}:role/live-caption-engine-task-role`;
-    const outputChannelPolicy = new mediapackagev2.CfnChannelPolicy(this, 'OutputChannelPolicy', {
-      channelGroupName: OUTPUT_GROUP_NAME,
-      channelName: OUTPUT_CHANNEL_NAME,
-      policy: {
-        Version: '2012-10-17',
-        Statement: [{
-          Sid: 'AllowEcsTaskPutObject',
-          Effect: 'Allow',
-          Principal: {
-            AWS: ecsTaskRoleArn
-          },
-          Action: ['mediapackagev2:PutObject'],
-          Resource: outputMpChannel.attrArn
-        }]
-      }
-    });
-    outputChannelPolicy.addDependency(outputMpChannel);
+    // NOTE: The OUTPUT channel policy (allowing the ECS task role to PutObject)
+    // is created in LiveCaptionStack where taskRole.roleArn is a same-stack
+    // Fn::GetAtt. Building a cross-stack IAM ARN here via Fn::Join causes
+    // MediaPackage V2 to reject the policy as invalid.
 
     // RTMP_PUSH: the encoder pushes to ECS NMS, which relays via ffmpeg to MediaLive.
     // ECS discovers the actual push endpoint URL at runtime using DescribeInput.
@@ -547,6 +537,7 @@ export class MediaStack extends cdk.Stack {
     // Output channel ingest + egress URLs — ECS SegmentAssembler pushes assembled tracks here.
     const outputIngestUrl0 = cdk.Fn.select(0, outputMpChannel.attrIngestEndpointUrls);
     this.mediaPackageOutputIngestUrl = outputIngestUrl0;
+    this.mediaPackageOutputChannelArn = outputMpChannel.attrArn;
 
     const outputOriginManifestUrl = cdk.Fn.select(0, outputOriginEndpoint.attrHlsManifestUrls);
     this.mediaPackageOutputOriginUrl = cdk.Fn.select(0, cdk.Fn.split(`/${MANIFEST_NAME}.m3u8`, outputOriginManifestUrl));

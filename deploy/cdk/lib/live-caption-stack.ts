@@ -5,6 +5,7 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as mediapackagev2 from 'aws-cdk-lib/aws-mediapackagev2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as autoscaling from 'aws-cdk-lib/aws-applicationautoscaling';
 import { Construct } from 'constructs';
@@ -43,6 +44,13 @@ export interface LiveCaptionStackProps extends cdk.StackProps {
    * Egress base URL of the output (player-facing) MediaPackage V2 channel.
    */
   mediapackageOutputOriginUrl?: string;
+
+  /**
+   * ARN of the output (player-facing) MediaPackage V2 channel.
+   * When provided, a CfnChannelPolicy is created here (using the ECS task role's
+   * Fn::GetAtt ARN) so MediaPackage V2 allows PutObject from the task.
+   */
+  mediapackageOutputChannelArn?: string;
 
   /**
    * Enable AWS Polly dubbing support (adds polly:SynthesizeSpeech to the task role).
@@ -259,6 +267,26 @@ export class LiveCaptionStack extends cdk.Stack {
       actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
       resources: [logGroup.logGroupArn]
     }));
+
+    // Allow ECS task to PUT segments to the output (player-facing) MediaPackage V2 channel.
+    // Created here so taskRole.roleArn resolves as a same-stack Fn::GetAtt, which
+    // MediaPackage V2 accepts — cross-stack Fn::Join ARNs are rejected as invalid policy.
+    if (props.mediapackageOutputChannelArn) {
+      new mediapackagev2.CfnChannelPolicy(this, 'OutputChannelPolicy', {
+        channelGroupName: 'live-caption-output',
+        channelName: 'main',
+        policy: {
+          Version: '2012-10-17',
+          Statement: [{
+            Sid: 'AllowEcsTaskPutObject',
+            Effect: 'Allow',
+            Principal: { AWS: taskRole.roleArn },
+            Action: 'mediapackagev2:PutObject',
+            Resource: props.mediapackageOutputChannelArn
+          }]
+        }
+      });
+    }
 
     // ── Task definition ────────────────────────────────────────────────────────
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDef', {
