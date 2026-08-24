@@ -34,7 +34,7 @@ class SegmentAssembler extends EventEmitter {
     pollIntervalMs = 2000,
     segmentDurationSec = 6,
     outputDelaySegments = 2,
-    sourceAudioEmbedded = true,
+    sourceAudioEmbedded = false,
     masterManifestVersion = 6
   }) {
     super();
@@ -77,10 +77,11 @@ class SegmentAssembler extends EventEmitter {
     this._nextTrackIndex = 2;
     this._audioTrackIndex = new Map();   // lang -> index
     this._captionTrackIndex = new Map(); // lang -> index
-    // Per-track sequence counters — seeded from wall-clock time so a fresh SegmentAssembler
-    // (created on every RTMP reconnect) never reuses sequence numbers already ingested by a
-    // prior instance on the same long-lived output MPv2 channel.
-    this._videoSegSeq = Date.now();
+    // Per-track sequence counters. MediaPackage V2's real (MediaLive-fed) ingest uses small
+    // monotonic sequence numbers starting near 0 (verified against the working raw channel,
+    // e.g. seg_1_29.ts) — huge Date.now()-based values previously used here caused every
+    // ingested segment/playlist to PUT with 200 OK yet never be servable on egress (404).
+    this._videoSegSeq = 1;
     this._audioSegSeq = new Map();        // lang -> next seq
     this._captionSegSeq = new Map();      // lang -> next seq
     // Per-track filename remap (original upstream filename -> ingest filename)
@@ -128,7 +129,7 @@ class SegmentAssembler extends EventEmitter {
     if (!this._pendingCaptions.has(lang)) this._pendingCaptions.set(lang, []);
     if (!this._captionTrackIndex.has(lang)) {
       this._captionTrackIndex.set(lang, this._nextTrackIndex++);
-      this._captionSegSeq.set(lang, Date.now());
+      this._captionSegSeq.set(lang, 1);
       this._captionSegRename.set(lang, new Map());
     }
     // Master is re-pushed from _pushPlaylists after variants exist; nothing to do here.
@@ -142,7 +143,7 @@ class SegmentAssembler extends EventEmitter {
     if (!this._pendingAudio.has(lang)) this._pendingAudio.set(lang, []);
     if (!this._audioTrackIndex.has(lang)) {
       this._audioTrackIndex.set(lang, this._nextTrackIndex++);
-      this._audioSegSeq.set(lang, Date.now());
+      this._audioSegSeq.set(lang, 1);
       this._audioSegRename.set(lang, new Map());
     }
     // Master is re-pushed from _pushPlaylists after variants exist; nothing to do here.

@@ -6,6 +6,12 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 class AudioHlsPublisher {
+  // All audio renditions (src + every dub language) MUST share one output sample
+  // rate/channel layout, since they live in the same HLS #EXT-X-MEDIA AUDIO group.
+  // Mixing e.g. 16kHz src audio with 24kHz dub audio breaks MSE playback in
+  // browsers once the player probes/switches between the tracks.
+  static OUTPUT_SAMPLE_RATE = 24000;
+
   constructor({
     logger,
     ffmpegPath,
@@ -54,6 +60,14 @@ class AudioHlsPublisher {
       '-ar', String(this.sampleRate),
       '-ac', String(this.channels),
       '-i', 'pipe:0',
+      // Force every audio rendition (src + all dub languages) to the SAME output
+      // sample rate/channel layout regardless of the input PCM's native rate.
+      // Different renditions in the same HLS AUDIO group (e.g. 16kHz src vs
+      // 24kHz dub) previously produced inconsistent AAC configs, which made
+      // browsers' MSE audio decoders fail with "unsupported config" once
+      // hls.js probed/switched between tracks.
+      '-ar', String(AudioHlsPublisher.OUTPUT_SAMPLE_RATE),
+      '-ac', '1',
       '-c:a', 'aac',
       '-b:a', '96k',
       '-f', 'hls',

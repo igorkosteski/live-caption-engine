@@ -65,7 +65,9 @@ function buildConfig() {
       // Hold back this many newest segments from output playlists to improve player stability at live edge.
       outputDelaySegments: toInt(process.env.MEDIAPACKAGE_OUTPUT_DELAY_SEGMENTS, 2),
       // When true, writes the source audio rendition without URI (assumes muxed video+audio).
-      sourceAudioEmbedded: toBool(process.env.MEDIAPACKAGE_SOURCE_AUDIO_EMBEDDED, true),
+      // NOTE: MediaPackage V2 rejects (silently 404s) the primary playlist when it contains a
+      // URI-less AUDIO EXT-X-MEDIA entry alongside other renditions with URIs — keep this false.
+      sourceAudioEmbedded: toBool(process.env.MEDIAPACKAGE_SOURCE_AUDIO_EMBEDDED, false),
       // HLS master version emitted by SegmentAssembler.
       masterManifestVersion: toInt(process.env.MEDIAPACKAGE_MASTER_MANIFEST_VERSION, 6)
     },

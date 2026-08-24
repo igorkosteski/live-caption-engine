@@ -149,6 +149,8 @@ export class MediaStack extends cdk.Stack {
       channelName: OUTPUT_CHANNEL_NAME,
       description: 'Player-facing assembled channel'
     });
+    // NOTE: OutputLockingMode only applies to CMAF input-type channels, not HLS/TS —
+    // confirmed via deployment error, so it's not usable here. Reverted.
     outputMpChannel.addDependency(outputChannelGroup);
 
     const outputOriginEndpoint = new mediapackagev2.CfnOriginEndpoint(this, 'OutputHlsEndpoint', {
